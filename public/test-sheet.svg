@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400">
+  <!-- Outer boundary: irregular leather hide shape -->
+  <path d="M 30,80 Q 0,50 20,20 Q 60,0 120,10 Q 180,5 240,15 Q 320,0 400,10 Q 460,5 520,20 Q 570,35 580,80 Q 590,140 575,200 Q 590,260 570,320 Q 540,380 480,395 Q 400,405 320,395 Q 240,405 160,395 Q 80,390 40,360 Q 10,330 20,280 Q 5,220 20,160 Q 10,120 30,80 Z"
+        fill="none" stroke="black"/>
+  <!-- Obstacle 1: scar near top-left -->
+  <ellipse cx="120" cy="80" rx="40" ry="25" fill="none" stroke="red"/>
+  <!-- Obstacle 2: scar near center -->
+  <path d="M 260,180 Q 290,160 320,175 Q 340,200 310,215 Q 280,225 260,205 Z"
+        fill="none" stroke="red"/>
+  <!-- Obstacle 3: small scar near bottom-right -->
+  <circle cx="450" cy="310" r="30" fill="none" stroke="red"/>
+</svg>

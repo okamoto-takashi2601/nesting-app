@@ -1,0 +1,1172 @@
+'use client'
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
+import type { NestResult, SheetConfig, PlacedPart, Point } from '@/types/nesting'
+
+interface Props {
+  result: NestResult | null
+  sheetConfig: SheetConfig
+  isRunning?: boolean
+  progress?: { current: number; total: number } | null
+  boundary?: Point[]
+  obstacles?: Point[][]
+  editMode: boolean
+  onEditModeChange: (v: boolean) => void
+  editablePlaced: PlacedPart[]
+  onPlacedChange: (placed: PlacedPart[]) => void
+}
+
+const PALETTE = ['#4f8ef7', '#4fcf8e', '#f7c34f', '#f77f4f', '#cf4ff7', '#4ff7e8']
+const PAD = 32
+const HANDLE_LIFT_PX = 22
+const HANDLE_R_PX = 7
+
+type Pt = { x: number; y: number }
+
+type EditInteract =
+  | { type: 'idle' }
+  | { type: 'moving'; partId: string; origPts: Pt[]; origHoles: Pt[][] | undefined; startMmX: number; startMmY: number }
+  | { type: 'rotating'; partId: string; origPts: Pt[]; origHoles: Pt[][] | undefined; cx: number; cy: number; startAngle: number }
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
+
+function getBounds(pts: Pt[]) {
+  let minX = pts[0].x, minY = pts[0].y, maxX = pts[0].x, maxY = pts[0].y
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y
+  }
+  return { minX, minY, maxX, maxY }
+}
+
+function pointInPoly(px: number, py: number, pts: Pt[]) {
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+      inside = !inside
+  }
+  return inside
+}
+
+function closestBboxPts(b1: ReturnType<typeof getBounds>, b2: ReturnType<typeof getBounds>): [Pt, Pt] {
+  const cx2 = (b2.minX + b2.maxX) / 2, cy2 = (b2.minY + b2.maxY) / 2
+  const cx1 = (b1.minX + b1.maxX) / 2, cy1 = (b1.minY + b1.maxY) / 2
+  return [
+    { x: Math.max(b1.minX, Math.min(b1.maxX, cx2)), y: Math.max(b1.minY, Math.min(b1.maxY, cy2)) },
+    { x: Math.max(b2.minX, Math.min(b2.maxX, cx1)), y: Math.max(b2.minY, Math.min(b2.maxY, cy1)) },
+  ]
+}
+
+function getCentroid(pts: Pt[]): Pt {
+  return { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length }
+}
+
+function translatePts(pts: Pt[], dx: number, dy: number): Pt[] {
+  return pts.map(p => ({ x: p.x + dx, y: p.y + dy }))
+}
+
+function rotatePts(pts: Pt[], cx: number, cy: number, angle: number): Pt[] {
+  const cos = Math.cos(angle), sin = Math.sin(angle)
+  return pts.map(p => ({
+    x: cx + (p.x - cx) * cos - (p.y - cy) * sin,
+    y: cy + (p.x - cx) * sin + (p.y - cy) * cos,
+  }))
+}
+
+function getRotateHandle(pts: Pt[], scale: number): Pt {
+  const b = getBounds(pts)
+  return { x: (b.minX + b.maxX) / 2, y: b.minY - HANDLE_LIFT_PX / scale }
+}
+
+function getEdgeAxes(poly: Pt[]): Pt[] {
+  const axes: Pt[] = []
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.sqrt(dx * dx + dy * dy)
+    if (len > 0.001) axes.push({ x: -dy / len, y: dx / len })
+  }
+  return axes
+}
+
+function projectOnto(poly: Pt[], axis: Pt): [number, number] {
+  let min = Infinity, max = -Infinity
+  for (const p of poly) {
+    const d = p.x * axis.x + p.y * axis.y
+    if (d < min) min = d; if (d > max) max = d
+  }
+  return [min, max]
+}
+
+function satCollides(a: Pt[], b: Pt[]): boolean {
+  for (const axis of [...getEdgeAxes(a), ...getEdgeAxes(b)]) {
+    const [minA, maxA] = projectOnto(a, axis)
+    const [minB, maxB] = projectOnto(b, axis)
+    if (maxA <= minB || maxB <= minA) return false
+  }
+  return true
+}
+
+function isContainedInBounds(pts: Pt[], boundary: Pt[] | undefined, W: number, H: number): boolean {
+  for (const p of pts) {
+    if (boundary && boundary.length >= 3) {
+      if (!pointInPoly(p.x, p.y, boundary)) return false
+    } else {
+      if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) return false
+    }
+  }
+  return true
+}
+
+function isValidPlacement(
+  candidatePts: Pt[],
+  partId: string,
+  allParts: PlacedPart[],
+  boundary: Pt[] | undefined,
+  obstacles: Pt[][] | undefined,
+  W: number,
+  H: number
+): boolean {
+  if (!isContainedInBounds(candidatePts, boundary, W, H)) return false
+  for (const other of allParts) {
+    if (other.id === partId) continue
+    if (satCollides(candidatePts, other.points)) return false
+  }
+  if (obstacles) {
+    for (const obs of obstacles) {
+      if (obs.length >= 3 && satCollides(candidatePts, obs)) return false
+    }
+  }
+  return true
+}
+
+function drawDim(
+  ctx: CanvasRenderingContext2D,
+  x1: number, y1: number, x2: number, y2: number,
+  label: string,
+  scale: number,
+  offsetPx: number
+) {
+  const dx = x2 - x1, dy = y2 - y1
+  const len = Math.sqrt(dx * dx + dy * dy)
+  if (len < 0.5) return
+  const ux = dx / len, uy = dy / len
+  const nx = -uy, ny = ux
+  const off = offsetPx / scale
+
+  const d1x = x1 + nx * off, d1y = y1 + ny * off
+  const d2x = x2 + nx * off, d2y = y2 + ny * off
+
+  ctx.save()
+  ctx.strokeStyle = '#475569'
+  ctx.lineWidth = 0.8 / scale
+
+  const gap = 2 / scale
+  ctx.beginPath(); ctx.moveTo(x1 + nx * gap, y1 + ny * gap); ctx.lineTo(d1x + nx * gap, d1y + ny * gap); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(x2 + nx * gap, y2 + ny * gap); ctx.lineTo(d2x + nx * gap, d2y + ny * gap); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(d1x, d1y); ctx.lineTo(d2x, d2y); ctx.stroke()
+  const tk = 4 / scale
+  ctx.beginPath(); ctx.moveTo(d1x, d1y); ctx.lineTo(d1x + ux * tk, d1y + uy * tk); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(d2x, d2y); ctx.lineTo(d2x - ux * tk, d2y - uy * tk); ctx.stroke()
+
+  const mx = (d1x + d2x) / 2, my = (d1y + d2y) / 2
+  const fs = Math.max(5, Math.min(10, 7.5 / scale))
+  ctx.fillStyle = '#64748b'
+  ctx.font = `${fs}px Inter, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.save()
+  ctx.translate(mx, my)
+  const angle = Math.atan2(dy, dx)
+  ctx.rotate(Math.abs(angle) <= Math.PI / 2 ? angle : angle - Math.PI)
+  ctx.fillText(label, 0, -4.5 / scale)
+  ctx.restore()
+  ctx.restore()
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export default function NestingCanvas({
+  result, sheetConfig, isRunning, progress, boundary, obstacles,
+  editMode, onEditModeChange, editablePlaced, onPlacedChange,
+}: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [viewScale, setViewScale] = useState(1)
+  const [viewOffset, setViewOffset] = useState({ x: PAD, y: PAD })
+  const [showExport, setShowExport] = useState(false)
+  const [exportBlocked, setExportBlocked] = useState(false)
+
+  // Measurement state
+  const [measureMode, setMeasureMode] = useState(false)
+  const [selectedPart, setSelectedPart] = useState<PlacedPart | null>(null)
+  const [measurePts, setMeasurePts] = useState<Pt[]>([])
+  const [measureHits, setMeasureHits] = useState<(PlacedPart | null)[]>([])
+  const [hoverPt, setHoverPt] = useState<Pt | null>(null)
+
+  // Edit state
+  const [selectedEditId, setSelectedEditId] = useState<string | null>(null)
+  const [editInteract, setEditInteract] = useState<EditInteract>({ type: 'idle' })
+  const [tempPart, setTempPart] = useState<PlacedPart | null>(null)
+
+  const isDragging = useRef(false)
+  const didDrag = useRef(false)
+  const dragStart = useRef({ x: 0, y: 0 })
+  const dragOffset = useRef({ x: PAD, y: PAD })
+
+  // Clear edit state on mode exit
+  useEffect(() => {
+    if (!editMode) {
+      setSelectedEditId(null)
+      setEditInteract({ type: 'idle' })
+      setTempPart(null)
+    }
+  }, [editMode])
+
+  // Clear measure state when entering edit mode
+  useEffect(() => {
+    if (editMode) {
+      setMeasureMode(false)
+      setSelectedPart(null)
+      setMeasurePts([])
+      setMeasureHits([])
+      setHoverPt(null)
+    }
+  }, [editMode])
+
+  // Hide export warning after 2s
+  useEffect(() => {
+    if (!exportBlocked) return
+    const t = setTimeout(() => setExportBlocked(false), 2000)
+    return () => clearTimeout(t)
+  }, [exportBlocked])
+
+  const labelColors = useMemo(() => {
+    const map = new Map<string, string>()
+    if (!result) return map
+    for (const part of result.placed) {
+      if (!map.has(part.label)) map.set(part.label, PALETTE[map.size % PALETTE.length])
+    }
+    return map
+  }, [result])
+
+  const fitView = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const w = canvas.width, h = canvas.height
+    const sx = (w - PAD * 2) / sheetConfig.width
+    const sy = (h - PAD * 2) / sheetConfig.height
+    const s = Math.min(sx, sy, 4)
+    const shW = sheetConfig.width * s, shH = sheetConfig.height * s
+    setViewScale(s)
+    setViewOffset({ x: Math.round((w - shW) / 2), y: Math.round((h - shH) / 2) })
+  }, [sheetConfig])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const parent = canvas.parentElement
+    if (!parent) return
+    canvas.width = parent.clientWidth
+    canvas.height = parent.clientHeight
+    fitView()
+  }, [sheetConfig, fitView])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const parent = canvas.parentElement
+    if (!parent) return
+    const ro = new ResizeObserver(() => {
+      canvas.width = parent.clientWidth
+      canvas.height = parent.clientHeight
+      fitView()
+    })
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, [fitView])
+
+  // ── Computed measurement data ─────────────────────────────────────────────
+
+  const selInfo = useMemo(() => {
+    if (!selectedPart || measureMode) return null
+    const b = getBounds(selectedPart.points)
+    const W = sheetConfig.width, H = sheetConfig.height
+    return {
+      label: selectedPart.label,
+      w: +(b.maxX - b.minX).toFixed(2),
+      h: +(b.maxY - b.minY).toFixed(2),
+      left: +b.minX.toFixed(2),
+      right: +(W - b.maxX).toFixed(2),
+      top: +b.minY.toFixed(2),
+      bottom: +(H - b.maxY).toFixed(2),
+    }
+  }, [selectedPart, measureMode, sheetConfig])
+
+  const measureDist = useMemo(() => {
+    if (!measureMode || measurePts.length !== 2) return null
+    const [p1, p2] = measurePts
+    return +Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2).toFixed(2)
+  }, [measureMode, measurePts])
+
+  const partGap = useMemo(() => {
+    if (measureHits.length !== 2) return null
+    const [h1, h2] = measureHits
+    if (!h1 || !h2 || h1.id === h2.id) return null
+    const b1 = getBounds(h1.points), b2 = getBounds(h2.points)
+    const dx = Math.max(0, Math.max(b1.minX - b2.maxX, b2.minX - b1.maxX))
+    const dy = Math.max(0, Math.max(b1.minY - b2.maxY, b2.minY - b1.maxY))
+    const [cp1, cp2] = closestBboxPts(b1, b2)
+    return { gap: +Math.sqrt(dx * dx + dy * dy).toFixed(2), p1: cp1, p2: cp2, label1: h1.label, label2: h2.label, parts: [h1, h2] as PlacedPart[] }
+  }, [measureHits])
+
+  // ── Draw ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const s = viewScale
+
+    ctx.fillStyle = '#1e293b'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    ctx.save()
+    ctx.translate(viewOffset.x, viewOffset.y)
+    ctx.scale(s, s)
+
+    const W = sheetConfig.width, H = sheetConfig.height
+
+    // ── Sheet background ──
+    if (boundary && boundary.length >= 3) {
+      ctx.fillStyle = '#334155'
+      ctx.fillRect(0, 0, W, H)
+
+      ctx.beginPath()
+      ctx.moveTo(boundary[0].x, boundary[0].y)
+      for (let i = 1; i < boundary.length; i++) ctx.lineTo(boundary[i].x, boundary[i].y)
+      ctx.closePath()
+      ctx.fillStyle = '#ffffff'
+      ctx.fill()
+
+      ctx.save()
+      ctx.beginPath()
+      ctx.moveTo(boundary[0].x, boundary[0].y)
+      for (let i = 1; i < boundary.length; i++) ctx.lineTo(boundary[i].x, boundary[i].y)
+      ctx.closePath()
+      ctx.clip()
+      ctx.fillStyle = '#cbd5e1'
+      for (let x = 50; x < W; x += 50)
+        for (let y = 50; y < H; y += 50) {
+          ctx.beginPath(); ctx.arc(x, y, 0.7 / s, 0, Math.PI * 2); ctx.fill()
+        }
+      ctx.restore()
+
+      ctx.beginPath()
+      ctx.moveTo(boundary[0].x, boundary[0].y)
+      for (let i = 1; i < boundary.length; i++) ctx.lineTo(boundary[i].x, boundary[i].y)
+      ctx.closePath()
+      ctx.strokeStyle = '#94a3b8'
+      ctx.lineWidth = 1.5 / s
+      ctx.stroke()
+
+      if (obstacles && obstacles.length > 0) {
+        for (const obs of obstacles) {
+          if (obs.length < 3) continue
+          ctx.beginPath()
+          ctx.moveTo(obs[0].x, obs[0].y)
+          for (let i = 1; i < obs.length; i++) ctx.lineTo(obs[i].x, obs[i].y)
+          ctx.closePath()
+          ctx.fillStyle = 'rgba(239,68,68,0.22)'
+          ctx.fill()
+
+          ctx.save()
+          ctx.beginPath()
+          ctx.moveTo(obs[0].x, obs[0].y)
+          for (let i = 1; i < obs.length; i++) ctx.lineTo(obs[i].x, obs[i].y)
+          ctx.closePath()
+          ctx.clip()
+          const hatchStep = 8 / s
+          const ob = getBounds(obs)
+          ctx.strokeStyle = 'rgba(239,68,68,0.45)'
+          ctx.lineWidth = 0.8 / s
+          for (let hx = ob.minX - (ob.maxY - ob.minY); hx < ob.maxX + (ob.maxY - ob.minY); hx += hatchStep) {
+            ctx.beginPath(); ctx.moveTo(hx, ob.minY); ctx.lineTo(hx + (ob.maxY - ob.minY), ob.maxY); ctx.stroke()
+          }
+          ctx.restore()
+
+          ctx.beginPath()
+          ctx.moveTo(obs[0].x, obs[0].y)
+          for (let i = 1; i < obs.length; i++) ctx.lineTo(obs[i].x, obs[i].y)
+          ctx.closePath()
+          ctx.strokeStyle = '#ef4444'
+          ctx.lineWidth = 1.5 / s
+          ctx.setLineDash([5 / s, 3 / s])
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
+      }
+    } else {
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, W, H)
+      ctx.fillStyle = '#cbd5e1'
+      for (let x = 50; x < W; x += 50)
+        for (let y = 50; y < H; y += 50) {
+          ctx.beginPath(); ctx.arc(x, y, 0.7 / s, 0, Math.PI * 2); ctx.fill()
+        }
+      ctx.strokeStyle = '#94a3b8'
+      ctx.lineWidth = 1 / s
+      ctx.strokeRect(0, 0, W, H)
+    }
+
+    // Sheet dimension labels
+    const dimFs = Math.max(6, Math.min(11, 9 / s))
+    ctx.fillStyle = '#94a3b8'
+    ctx.font = `${dimFs}px Inter, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.fillText(`${W} mm`, W / 2, H + 6 / s)
+    ctx.save()
+    ctx.translate(-6 / s, H / 2)
+    ctx.rotate(-Math.PI / 2)
+    ctx.textBaseline = 'bottom'
+    ctx.fillText(`${H} mm`, 0, 0)
+    ctx.restore()
+
+    // ── Parts ──
+    const partsToRender = editablePlaced.length > 0 ? editablePlaced : (result?.placed ?? [])
+
+    // Fill pass
+    for (const part of partsToRender) {
+      if (part.points.length < 2) continue
+      const color = labelColors.get(part.label) ?? '#4f8ef7'
+      const isSelected = editMode ? part.id === selectedEditId : selectedPart?.id === part.id
+      const pts = (editMode && tempPart?.id === part.id) ? tempPart.points : part.points
+      const holes = (editMode && tempPart?.id === part.id) ? tempPart.holes : part.holes
+
+      ctx.beginPath()
+      ctx.moveTo(pts[0].x, pts[0].y)
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+      ctx.closePath()
+      if (holes) {
+        for (const hole of holes) {
+          ctx.moveTo(hole[0].x, hole[0].y)
+          for (let i = 1; i < hole.length; i++) ctx.lineTo(hole[i].x, hole[i].y)
+          ctx.closePath()
+        }
+      }
+      ctx.fillStyle = isSelected ? color + '55' : color + '28'
+      ctx.fill('evenodd')
+      ctx.strokeStyle = color
+      ctx.lineWidth = (isSelected ? 2 : 1.2) / s
+      ctx.stroke()
+    }
+
+    // Label pass
+    for (const part of partsToRender) {
+      if (part.points.length < 2) continue
+      const color = labelColors.get(part.label) ?? '#4f8ef7'
+      const pts = (editMode && tempPart?.id === part.id) ? tempPart.points : part.points
+      const cx = pts.reduce((sum, p) => sum + p.x, 0) / pts.length
+      const cy = pts.reduce((sum, p) => sum + p.y, 0) / pts.length
+      const fs = Math.max(4, Math.min(10, 8 / s))
+      ctx.font = `600 ${fs}px Inter, sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = color
+      ctx.fillText(part.label, cx, cy)
+    }
+
+    // ── Waste areas (only when not in edit mode) ──
+    if (!editMode && partsToRender.length > 0 && !isRunning) {
+      let x0 = W, y0 = H, x1 = 0, y1 = 0
+      for (const p of partsToRender)
+        for (const pt of p.points) {
+          if (pt.x < x0) x0 = pt.x; if (pt.y < y0) y0 = pt.y
+          if (pt.x > x1) x1 = pt.x; if (pt.y > y1) y1 = pt.y
+        }
+      const wTop = y0, wBot = H - y1, wLft = x0, wRgt = W - x1
+      ctx.fillStyle = 'rgba(251,146,60,0.08)'
+      if (wTop > 1) ctx.fillRect(0, 0, W, y0)
+      if (wBot > 1) ctx.fillRect(0, y1, W, wBot)
+      if (wLft > 1) ctx.fillRect(0, y0, x0, y1 - y0)
+      if (wRgt > 1) ctx.fillRect(x1, y0, wRgt, y1 - y0)
+      ctx.save()
+      ctx.strokeStyle = '#f97316'
+      ctx.lineWidth = 0.8 / s
+      ctx.setLineDash([5 / s, 3 / s])
+      if (wTop > 1) { ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke() }
+      if (wBot > 1) { ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(W, y1); ctx.stroke() }
+      if (wLft > 1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.stroke() }
+      if (wRgt > 1) { ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke() }
+      ctx.setLineDash([])
+      ctx.restore()
+      if (wTop > 1) drawDim(ctx, W, 0,  W, y0, `${wTop.toFixed(1)} mm`, s, -28)
+      if (wBot > 1) drawDim(ctx, W, y1, W, H,  `${wBot.toFixed(1)} mm`, s, -28)
+      if (wLft > 1) drawDim(ctx, 0,  H, x0, H, `${wLft.toFixed(1)} mm`, s, 28)
+      if (wRgt > 1) drawDim(ctx, x1, H, W,  H, `${wRgt.toFixed(1)} mm`, s, 28)
+    }
+
+    // ── Selected part dims (measurement mode) ──
+    if (!editMode && selectedPart && !measureMode) {
+      const b = getBounds(selectedPart.points)
+      const pw = b.maxX - b.minX, ph = b.maxY - b.minY
+      const midY = b.minY + ph / 2, midX = b.minX + pw / 2
+      ctx.save()
+      ctx.strokeStyle = '#f8fafc'
+      ctx.lineWidth = 1.5 / s
+      ctx.setLineDash([5 / s, 3 / s])
+      ctx.beginPath()
+      ctx.moveTo(selectedPart.points[0].x, selectedPart.points[0].y)
+      for (let i = 1; i < selectedPart.points.length; i++) ctx.lineTo(selectedPart.points[i].x, selectedPart.points[i].y)
+      ctx.closePath(); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.restore()
+      drawDim(ctx, b.minX, b.minY, b.maxX, b.minY, `${pw.toFixed(1)} mm`, s, -18)
+      drawDim(ctx, b.maxX, b.minY, b.maxX, b.maxY, `${ph.toFixed(1)} mm`, s, 18)
+      ctx.globalAlpha = 0.7
+      if (b.minX > 1) drawDim(ctx, 0, midY, b.minX, midY, `${b.minX.toFixed(1)} mm`, s, 0)
+      if (W - b.maxX > 1) drawDim(ctx, b.maxX, midY, W, midY, `${(W - b.maxX).toFixed(1)} mm`, s, 0)
+      if (b.minY > 1) drawDim(ctx, midX, 0, midX, b.minY, `${b.minY.toFixed(1)} mm`, s, 0)
+      if (H - b.maxY > 1) drawDim(ctx, midX, b.maxY, midX, H, `${(H - b.maxY).toFixed(1)} mm`, s, 0)
+      ctx.globalAlpha = 1
+    }
+
+    // ── Edit handles ──
+    if (editMode && selectedEditId) {
+      const sel = editablePlaced.find(p => p.id === selectedEditId)
+      const pts = sel ? ((tempPart?.id === selectedEditId) ? tempPart!.points : sel.points) : null
+      if (pts) {
+        const b = getBounds(pts)
+        const handle = getRotateHandle(pts, s)
+        const topCx = (b.minX + b.maxX) / 2
+
+        ctx.save()
+        // Dashed bounding box
+        ctx.strokeStyle = '#94a3b8'
+        ctx.lineWidth = 1 / s
+        ctx.setLineDash([4 / s, 3 / s])
+        ctx.strokeRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY)
+        ctx.setLineDash([])
+
+        // Line from bbox top-center to handle
+        ctx.strokeStyle = '#64748b'
+        ctx.lineWidth = 0.8 / s
+        ctx.beginPath()
+        ctx.moveTo(topCx, b.minY)
+        ctx.lineTo(handle.x, handle.y)
+        ctx.stroke()
+
+        // Handle circle
+        ctx.fillStyle = '#1e293b'
+        ctx.strokeStyle = '#94a3b8'
+        ctx.lineWidth = 1.2 / s
+        ctx.beginPath()
+        ctx.arc(handle.x, handle.y, HANDLE_R_PX / s, 0, Math.PI * 2)
+        ctx.fill(); ctx.stroke()
+
+        // Rotation arc symbol inside handle
+        const hr = (HANDLE_R_PX - 2.5) / s
+        ctx.strokeStyle = '#94a3b8'
+        ctx.lineWidth = 1 / s
+        ctx.lineCap = 'round'
+        ctx.beginPath()
+        ctx.arc(handle.x, handle.y, hr, -Math.PI * 0.8, Math.PI * 0.8)
+        ctx.stroke()
+        // Arrow tip
+        const tipAngle = Math.PI * 0.8
+        const tx = handle.x + hr * Math.cos(tipAngle)
+        const ty = handle.y + hr * Math.sin(tipAngle)
+        const arrowSize = 2.5 / s
+        ctx.beginPath()
+        ctx.moveTo(tx - arrowSize * Math.cos(tipAngle - Math.PI / 2), ty - arrowSize * Math.sin(tipAngle - Math.PI / 2))
+        ctx.lineTo(tx + arrowSize * Math.cos(tipAngle + 0.6), ty + arrowSize * Math.sin(tipAngle + 0.6))
+        ctx.lineTo(tx + arrowSize * Math.cos(tipAngle - 0.6), ty + arrowSize * Math.sin(tipAngle - 0.6))
+        ctx.closePath()
+        ctx.fillStyle = '#94a3b8'
+        ctx.fill()
+        ctx.restore()
+      }
+    }
+
+    // ── Measure tool ──
+    if (!editMode && measureMode) {
+      if (partGap) {
+        for (const part of partGap.parts) {
+          ctx.save()
+          ctx.strokeStyle = '#f7c34f'
+          ctx.lineWidth = 1.8 / s
+          ctx.setLineDash([5 / s, 3 / s])
+          ctx.beginPath()
+          ctx.moveTo(part.points[0].x, part.points[0].y)
+          for (let i = 1; i < part.points.length; i++) ctx.lineTo(part.points[i].x, part.points[i].y)
+          ctx.closePath(); ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+        }
+        const { p1, p2, gap } = partGap
+        const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
+        if (dist > 0.5) {
+          ctx.save()
+          ctx.strokeStyle = '#f7c34f'
+          ctx.lineWidth = 1.5 / s
+          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
+          for (const pt of [p1, p2]) {
+            ctx.fillStyle = '#f7c34f'
+            ctx.beginPath(); ctx.arc(pt.x, pt.y, 3 / s, 0, Math.PI * 2); ctx.fill()
+          }
+          const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2
+          const fs = Math.max(6, Math.min(12, 10 / s))
+          const txt = `${gap} mm`
+          ctx.font = `bold ${fs}px Inter, sans-serif`
+          ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+          ctx.save()
+          ctx.translate(mx, my)
+          const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x)
+          ctx.rotate(Math.abs(angle) <= Math.PI / 2 ? angle : angle - Math.PI)
+          const tw = ctx.measureText(txt).width
+          ctx.fillStyle = 'rgba(15,23,42,0.88)'
+          ctx.fillRect(-tw / 2 - 3 / s, -fs - 4 / s, tw + 6 / s, fs + 4 / s)
+          ctx.fillStyle = '#f7c34f'
+          ctx.fillText(txt, 0, -2 / s)
+          ctx.restore(); ctx.restore()
+        }
+      } else {
+        const pts = [...measurePts]
+        if (pts.length === 1 && hoverPt) pts.push(hoverPt)
+        for (const pt of measurePts) {
+          ctx.save()
+          ctx.fillStyle = '#f7c34f'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 / s
+          ctx.beginPath(); ctx.arc(pt.x, pt.y, 4 / s, 0, Math.PI * 2)
+          ctx.fill(); ctx.stroke(); ctx.restore()
+        }
+        if (pts.length === 2) {
+          const [p1, p2] = pts
+          const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
+          const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2
+          ctx.save()
+          ctx.strokeStyle = measurePts.length === 2 ? '#f7c34f' : '#f7c34f88'
+          ctx.lineWidth = 1.5 / s
+          ctx.setLineDash(measurePts.length === 2 ? [] : [5 / s, 3 / s])
+          ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
+          ctx.setLineDash([])
+          if (dist > 1) {
+            const fs = Math.max(6, Math.min(12, 10 / s))
+            const txt = `${dist.toFixed(1)} mm`
+            ctx.font = `bold ${fs}px Inter, sans-serif`
+            ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+            ctx.save()
+            ctx.translate(mx, my)
+            const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x)
+            ctx.rotate(Math.abs(angle) <= Math.PI / 2 ? angle : angle - Math.PI)
+            const tw = ctx.measureText(txt).width
+            ctx.fillStyle = 'rgba(15,23,42,0.8)'
+            ctx.fillRect(-tw / 2 - 3 / s, -fs - 4 / s, tw + 6 / s, fs + 4 / s)
+            ctx.fillStyle = '#f7c34f'
+            ctx.fillText(txt, 0, -2 / s)
+            ctx.restore(); ctx.restore()
+          } else { ctx.restore() }
+        }
+      }
+    }
+
+    ctx.restore()
+  }, [result, editMode, editablePlaced, tempPart, selectedEditId, sheetConfig, viewScale, viewOffset, labelColors, selectedPart, measureMode, measurePts, measureHits, partGap, hoverPt, isRunning, boundary, obstacles])
+
+  // ── Canvas interaction ────────────────────────────────────────────────────
+
+  function toSheet(e: React.MouseEvent<HTMLCanvasElement>) {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    return {
+      x: (e.clientX - rect.left - viewOffset.x) / viewScale,
+      y: (e.clientY - rect.top - viewOffset.y) / viewScale,
+    }
+  }
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    const next = Math.max(0.05, Math.min(50, viewScale * factor))
+    setViewScale(next)
+    setViewOffset({
+      x: mx - (mx - viewOffset.x) * (next / viewScale),
+      y: my - (my - viewOffset.y) * (next / viewScale),
+    })
+  }
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (editMode && editablePlaced.length > 0) {
+      const pt = toSheet(e)
+
+      // Check rotate handle on selected part
+      const selPart = editablePlaced.find(p => p.id === selectedEditId)
+      if (selPart) {
+        const activePts = (tempPart?.id === selectedEditId) ? tempPart!.points : selPart.points
+        const handle = getRotateHandle(activePts, viewScale)
+        const dx = pt.x - handle.x, dy = pt.y - handle.y
+        const distPx = Math.sqrt(dx * dx + dy * dy) * viewScale
+        if (distPx <= HANDLE_R_PX + 4) {
+          const center = getCentroid(activePts)
+          setEditInteract({
+            type: 'rotating',
+            partId: selPart.id,
+            origPts: activePts,
+            origHoles: selPart.holes,
+            cx: center.x,
+            cy: center.y,
+            startAngle: Math.atan2(pt.y - center.y, pt.x - center.x),
+          })
+          return
+        }
+      }
+
+      // Hit test parts (reverse for topmost)
+      const hit = [...editablePlaced].reverse().find(p => pointInPoly(pt.x, pt.y, p.points))
+      if (hit) {
+        setSelectedEditId(hit.id)
+        const activePts = (tempPart?.id === hit.id) ? tempPart!.points : hit.points
+        setEditInteract({
+          type: 'moving',
+          partId: hit.id,
+          origPts: activePts,
+          origHoles: hit.holes,
+          startMmX: pt.x,
+          startMmY: pt.y,
+        })
+        return
+      }
+
+      // Click on empty: deselect + pan
+      setSelectedEditId(null)
+    }
+
+    isDragging.current = true
+    didDrag.current = false
+    dragStart.current = { x: e.clientX, y: e.clientY }
+    dragOffset.current = { x: viewOffset.x, y: viewOffset.y }
+  }
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (editMode && editInteract.type !== 'idle') {
+      const pt = toSheet(e)
+      const W = sheetConfig.width, H = sheetConfig.height
+
+      if (editInteract.type === 'moving') {
+        const dx = pt.x - editInteract.startMmX
+        const dy = pt.y - editInteract.startMmY
+        if (Math.abs(dx) < 0.5 / viewScale && Math.abs(dy) < 0.5 / viewScale) return
+        const newPts = translatePts(editInteract.origPts, dx, dy)
+        const newHoles = editInteract.origHoles?.map(h => translatePts(h, dx, dy))
+        if (isValidPlacement(newPts, editInteract.partId, editablePlaced, boundary, obstacles, W, H)) {
+          const base = editablePlaced.find(p => p.id === editInteract.partId)!
+          setTempPart({ ...base, points: newPts, holes: newHoles })
+        }
+      } else if (editInteract.type === 'rotating') {
+        const angle = Math.atan2(pt.y - editInteract.cy, pt.x - editInteract.cx)
+        const delta = angle - editInteract.startAngle
+        const newPts = rotatePts(editInteract.origPts, editInteract.cx, editInteract.cy, delta)
+        const newHoles = editInteract.origHoles?.map(h => rotatePts(h, editInteract.cx, editInteract.cy, delta))
+        if (isValidPlacement(newPts, editInteract.partId, editablePlaced, boundary, obstacles, W, H)) {
+          const base = editablePlaced.find(p => p.id === editInteract.partId)!
+          setTempPart({ ...base, points: newPts, holes: newHoles })
+        }
+      }
+      return
+    }
+
+    if (isDragging.current) {
+      const dx = e.clientX - dragStart.current.x, dy = e.clientY - dragStart.current.y
+      if (Math.sqrt(dx * dx + dy * dy) > 3) didDrag.current = true
+      setViewOffset({ x: dragOffset.current.x + dx, y: dragOffset.current.y + dy })
+    }
+    if (!editMode && measureMode) setHoverPt(toSheet(e))
+  }
+
+  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (editMode && editInteract.type !== 'idle') {
+      if (tempPart) {
+        onPlacedChange(editablePlaced.map(p => p.id === tempPart.id ? tempPart : p))
+        setTempPart(null)
+      }
+      setEditInteract({ type: 'idle' })
+      return
+    }
+
+    isDragging.current = false
+    if (didDrag.current) return
+
+    const pt = toSheet(e)
+
+    if (!editMode && measureMode) {
+      const hit = result?.placed.find(p => pointInPoly(pt.x, pt.y, p.points)) ?? null
+      setMeasurePts(prev => prev.length >= 2 ? [pt] : [...prev, pt])
+      setMeasureHits(prev => prev.length >= 2 ? [hit] : [...prev, hit])
+    } else if (!editMode) {
+      if (!result) return
+      const hit = result.placed.find(p => pointInPoly(pt.x, pt.y, p.points))
+      setSelectedPart(hit ?? null)
+    }
+  }
+
+  const handleMouseLeave = () => {
+    if (editMode && editInteract.type !== 'idle') {
+      if (tempPart) {
+        onPlacedChange(editablePlaced.map(p => p.id === tempPart.id ? tempPart : p))
+        setTempPart(null)
+      }
+      setEditInteract({ type: 'idle' })
+    }
+    isDragging.current = false
+    if (!editMode && measureMode) setHoverPt(null)
+  }
+
+  function zoomBy(factor: number) {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const cx = canvas.width / 2, cy = canvas.height / 2
+    const next = Math.max(0.05, Math.min(50, viewScale * factor))
+    setViewScale(next)
+    setViewOffset({
+      x: cx - (cx - viewOffset.x) * (next / viewScale),
+      y: cy - (cy - viewOffset.y) * (next / viewScale),
+    })
+  }
+
+  // ── Export ───────────────────────────────────────────────────────────────
+
+  function tryExport(fn: () => void) {
+    if (editMode) { setExportBlocked(true); return }
+    fn()
+  }
+
+  function download(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function exportSVG() {
+    if (!result) return
+    const lines = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetConfig.width}" height="${sheetConfig.height}">`,
+      `<rect width="${sheetConfig.width}" height="${sheetConfig.height}" fill="#fff"/>`,
+    ]
+    for (const part of result.placed) {
+      const color = labelColors.get(part.label) ?? '#4f8ef7'
+      const d = part.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
+      lines.push(`<path d="${d}" fill="${color}30" stroke="${color}" stroke-width="0.8"/>`)
+    }
+    lines.push('</svg>')
+    download(new Blob([lines.join('\n')], { type: 'image/svg+xml' }), 'nesting-layout.svg')
+  }
+
+  function exportDXF() {
+    if (!result) return
+    const L: string[] = []
+    const add = (...a: (string | number)[]) => a.forEach(v => L.push(String(v)))
+    add('0','SECTION','2','HEADER','9','$ACADVER','1','AC1009','0','ENDSEC','0','SECTION','2','ENTITIES')
+    for (const part of result.placed) {
+      const pts = part.points
+      for (let i = 0; i < pts.length; i++) {
+        const p1 = pts[i], p2 = pts[(i + 1) % pts.length]
+        add('0','LINE','8','0','10',p1.x.toFixed(4),'20',p1.y.toFixed(4),'30','0.0000','11',p2.x.toFixed(4),'21',p2.y.toFixed(4),'31','0.0000')
+      }
+    }
+    add('0','ENDSEC','0','EOF')
+    download(new Blob([L.join('\r\n')], { type: 'application/octet-stream' }), 'nesting-layout.dxf')
+  }
+
+  function exportIGES() {
+    if (!result) return
+    const f8 = (v: string | number) => String(v).padStart(8, ' ')
+    const row = (d: string, s: string, n: number) => (d + ' '.repeat(72)).slice(0, 72) + s + String(n).padStart(7, ' ')
+    const segPairs: [Point, Point][] = []
+    for (const p of result.placed)
+      for (let i = 0; i < p.points.length; i++)
+        segPairs.push([p.points[i], p.points[(i + 1) % p.points.length]])
+    const sL = [row('nesting-layout.igs', 'S', 1)]
+    const gStr = '1H,,1H;,4Hnest,4Hnest,4HNEST,4HNEST,16,38,6,308,15,4HNEST,1.0,2,2HMM,1,0.001,15H               ,0.001,1.0;'
+    const gL: string[] = []
+    for (let p = 0, gi = 1; p < gStr.length; p += 72, gi++) gL.push(row(gStr.slice(p, p + 72), 'G', gi))
+    const dL: string[] = [], pL: string[] = []
+    let dS = 1, pS = 1
+    for (const [a, b] of segPairs) {
+      const pd = `110,${a.x.toFixed(3)},${a.y.toFixed(3)},0.0,${b.x.toFixed(3)},${b.y.toFixed(3)},0.0;`
+      pL.push((pd + ' '.repeat(64)).slice(0, 64) + f8(dS) + 'P' + String(pS).padStart(7, ' '))
+      dL.push(f8(110)+f8(pS)+f8(0)+f8(0)+f8(0)+f8(0)+f8(0)+f8(0)+'00000000'+'D'+String(dS).padStart(7,' '))
+      dL.push(f8(110)+f8(0)+f8(0)+f8(1)+f8(0)+f8(0)+f8(0)+'        '+f8(0)+'D'+String(dS+1).padStart(7,' '))
+      dS += 2; pS++
+    }
+    const tL = row('S'+String(sL.length).padStart(7)+'G'+String(gL.length).padStart(7)+'D'+String(dL.length).padStart(7)+'P'+String(pL.length).padStart(7),'T',1)
+    download(new Blob([[...sL,...gL,...dL,...pL,tL].join('\r\n')+'\r\n'],{type:'application/octet-stream'}),'nesting-layout.igs')
+  }
+
+  const sheetCx = viewOffset.x + (sheetConfig.width * viewScale) / 2
+  const sheetCy = viewOffset.y + (sheetConfig.height * viewScale) / 2
+
+  const cursorStyle =
+    editInteract.type !== 'idle' ? 'grabbing' :
+    editMode ? 'default' :
+    measureMode ? 'crosshair' :
+    isDragging.current ? 'grabbing' : 'grab'
+
+  return (
+    <div className="flex flex-col w-full h-full bg-slate-800" onClick={() => setShowExport(false)}>
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 border-b border-slate-700 shrink-0">
+        <button onClick={fitView}
+          className="px-2 py-0.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors">
+          Fit
+        </button>
+        <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+        <button onClick={() => zoomBy(1.25)}
+          className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors text-sm">
+          +
+        </button>
+        <button onClick={() => zoomBy(1 / 1.25)}
+          className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors text-sm">
+          −
+        </button>
+        <span className="text-[10px] text-slate-600 ml-1 tabular-nums">{Math.round(viewScale * 100)}%</span>
+
+        <div className="w-px h-3.5 bg-slate-700 mx-1.5" />
+
+        {/* Measure toggle */}
+        {!editMode && (
+          <button
+            onClick={() => {
+              setMeasureMode(v => !v)
+              setSelectedPart(null)
+              setMeasurePts([])
+              setMeasureHits([])
+              setHoverPt(null)
+            }}
+            title="Measure tool — click two points"
+            className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs transition-colors ${
+              measureMode
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M2 8h12M2 8l2-2M2 8l2 2M14 8l-2-2M14 8l-2 2"/>
+              <line x1="5" y1="5" x2="5" y2="11" strokeWidth="1"/>
+              <line x1="8" y1="5" x2="8" y2="11" strokeWidth="1"/>
+              <line x1="11" y1="5" x2="11" y2="11" strokeWidth="1"/>
+            </svg>
+            Measure
+          </button>
+        )}
+        {!editMode && measureMode && measurePts.length > 0 && (
+          <button
+            onClick={() => { setMeasurePts([]); setMeasureHits([]); setHoverPt(null) }}
+            className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            Reset
+          </button>
+        )}
+
+        {/* Lock / Unlock button */}
+        {result && !isRunning && (
+          <>
+            <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+            <button
+              onClick={() => onEditModeChange(!editMode)}
+              title={editMode ? 'Lock layout (exit edit mode)' : 'Unlock to edit parts'}
+              className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs transition-colors ${
+                editMode
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              {editMode ? (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2.5" y="7" width="11" height="8" rx="1.5"/>
+                  <path d="M5.5 7V5a2.5 2.5 0 0 1 4.8-.9"/>
+                  <circle cx="8" cy="11" r="1.1" fill="currentColor" stroke="none"/>
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2.5" y="7" width="11" height="8" rx="1.5"/>
+                  <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>
+                  <circle cx="8" cy="11" r="1.1" fill="currentColor" stroke="none"/>
+                </svg>
+              )}
+              {editMode ? 'Unlock' : 'Lock'}
+            </button>
+          </>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {result && (
+            <div className="relative">
+              {exportBlocked && (
+                <div className="absolute bottom-full right-0 mb-1 whitespace-nowrap bg-orange-900/90 border border-orange-700 text-orange-300 text-[11px] px-2.5 py-1.5 rounded-lg shadow-xl z-30">
+                  Lock layout first to export
+                </div>
+              )}
+              {showExport && !editMode && (
+                <div className="absolute top-full right-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg overflow-hidden shadow-2xl min-w-24 z-20">
+                  {[{ label: 'SVG', fn: exportSVG }, { label: 'DXF', fn: exportDXF }, { label: 'IGS', fn: exportIGES }].map(opt => (
+                    <button key={opt.label}
+                      onClick={e => { e.stopPropagation(); opt.fn(); setShowExport(false) }}
+                      className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 transition-colors">
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={e => { e.stopPropagation(); tryExport(() => setShowExport(v => !v)) }}
+                className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                  editMode
+                    ? 'bg-slate-800/50 text-slate-600 cursor-not-allowed'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                }`}
+              >
+                Export ▾
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Canvas ── */}
+      <div className="relative flex-1 overflow-hidden">
+        {/* Progress overlay */}
+        {isRunning && (
+          <div className="absolute z-10 pointer-events-none"
+            style={{ left: sheetCx, top: sheetCy, transform: 'translate(-50%, -50%)' }}>
+            <div className="flex flex-col items-center gap-2 bg-slate-900/95 backdrop-blur-sm rounded-xl px-5 py-3 shadow-2xl border border-slate-600">
+              <div className="flex items-center gap-2.5">
+                <div className="w-3.5 h-3.5 rounded-full border-2 border-slate-600 border-t-blue-400 animate-spin shrink-0" />
+                <span className="text-slate-300 text-sm font-medium">
+                  {progress ? `Placing ${progress.current} / ${progress.total} parts` : 'Computing...'}
+                </span>
+              </div>
+              {progress && (
+                <div className="w-44 h-1 bg-slate-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-400 rounded-full transition-all duration-150"
+                    style={{ width: `${Math.round((progress.current / progress.total) * 100)}%` }} />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Edit mode banner */}
+        {editMode && !isRunning && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+            <div className="bg-blue-500/15 border border-blue-500/25 text-blue-400 text-[11px] px-3 py-1 rounded-full">
+              Edit mode — click to select, drag to move, drag handle to rotate
+            </div>
+          </div>
+        )}
+
+        {/* Measure hint */}
+        {!editMode && measureMode && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+            <div className="bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] px-3 py-1 rounded-full">
+              {measurePts.length === 0 ? 'Click a part or point' : measurePts.length === 1 ? 'Click another part or point' : 'Click to start new measurement'}
+            </div>
+          </div>
+        )}
+
+        {/* Measurement info panel */}
+        {!editMode && (selInfo || partGap || measureDist !== null) && (
+          <div className="absolute top-3 right-3 z-10 bg-slate-900/95 border border-slate-700 rounded-xl p-3 text-[11px] min-w-44 shadow-xl">
+            {selInfo && (
+              <>
+                <div className="text-slate-200 font-semibold mb-2">{selInfo.label}</div>
+                <div className="text-slate-500 mb-1">Part size</div>
+                <div className="flex justify-between text-slate-300 mb-0.5"><span>Width</span><span className="font-mono">{selInfo.w} mm</span></div>
+                <div className="flex justify-between text-slate-300 mb-2"><span>Height</span><span className="font-mono">{selInfo.h} mm</span></div>
+                <div className="text-slate-500 mb-1">Distance to sheet edge</div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-slate-300">
+                  <span>Left</span><span className="font-mono text-right">{selInfo.left} mm</span>
+                  <span>Right</span><span className="font-mono text-right">{selInfo.right} mm</span>
+                  <span>Top</span><span className="font-mono text-right">{selInfo.top} mm</span>
+                  <span>Bottom</span><span className="font-mono text-right">{selInfo.bottom} mm</span>
+                </div>
+                <button onClick={() => setSelectedPart(null)} className="mt-2 text-[10px] text-slate-600 hover:text-slate-400 transition-colors">× dismiss</button>
+              </>
+            )}
+            {partGap && (
+              <>
+                <div className="text-slate-500 mb-1">Gap between parts</div>
+                <div className="text-amber-400 font-mono font-bold text-base mb-1.5">{partGap.gap} mm</div>
+                <div className="text-slate-500">{partGap.label1} → {partGap.label2}</div>
+              </>
+            )}
+            {!partGap && measureDist !== null && (
+              <>
+                <div className="text-slate-500 mb-1">Distance</div>
+                <div className="text-amber-400 font-mono font-bold text-base">{measureDist} mm</div>
+                <div className="text-slate-500 mt-1">ΔX: {Math.abs(measurePts[1].x - measurePts[0].x).toFixed(1)} mm</div>
+                <div className="text-slate-500">ΔY: {Math.abs(measurePts[1].y - measurePts[0].y).toFixed(1)} mm</div>
+              </>
+            )}
+          </div>
+        )}
+
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full"
+          style={{ cursor: cursorStyle }}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
+          onDoubleClick={() => { if (!measureMode && editInteract.type === 'idle') fitView() }}
+        />
+
+        <div className="absolute bottom-2 left-3 text-[10px] text-slate-600 pointer-events-none select-none">
+          {editMode
+            ? 'Click part to select · Drag to move · Drag ↻ handle to rotate · Cannot drag outside boundary'
+            : measureMode
+              ? 'Click two points to measure · Esc to exit'
+              : 'Scroll to zoom · Drag to pan · Click part to measure · Double-click to fit'}
+        </div>
+      </div>
+
+      {/* ── Status bar ── */}
+      <div className="flex items-center gap-4 px-4 py-1.5 bg-slate-900 border-t border-slate-700 shrink-0 text-[11px] min-h-[28px]">
+        {result ? (
+          <>
+            <span className="text-slate-400">
+              <span className="text-slate-200 font-medium">{result.placed.length}</span> parts placed
+            </span>
+            <span className="text-slate-400">
+              Utilization <span className={`font-semibold ${result.efficiency >= 80 ? 'text-emerald-400' : result.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
+                {result.efficiency}%
+              </span>
+            </span>
+            {editMode && (
+              <span className="text-blue-400 font-medium">— Edit mode</span>
+            )}
+            <div className="ml-auto flex items-center gap-3">
+              {Array.from(labelColors.entries()).slice(0, 6).map(([label, color]) => (
+                <button key={label}
+                  onClick={() => {
+                    if (measureMode || editMode) return
+                    const part = result.placed.find(p => p.label === label)
+                    setSelectedPart(prev => prev?.label === label ? null : (part ?? null))
+                  }}
+                  className="flex items-center gap-1 text-slate-400 hover:text-slate-200 transition-colors">
+                  <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: color }} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <span className="text-slate-600">{isRunning ? 'Computing…' : 'Import parts and run nesting'}</span>
+        )}
+      </div>
+    </div>
+  )
+}
