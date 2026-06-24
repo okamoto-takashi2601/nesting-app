@@ -3,17 +3,11 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import NestingCanvas from '@/components/NestingCanvas'
 import { parseFile, parseFileForSheet } from '@/lib/svgParser'
 import { polygonArea } from '@/lib/geometry'
+import { LANGS, makeTFunc } from '@/lib/i18n'
+import type { Lang, TFunc } from '@/lib/i18n'
 import type { InputPolygon, NestResult, SheetConfig, LayoutMode, Point, PlacedPart } from '@/types/nesting'
 
 const PALETTE = ['#4f8ef7', '#4fcf8e', '#f7c34f', '#f77f4f', '#cf4ff7', '#4ff7e8']
-
-const LAYOUT_OPTIONS: { value: LayoutMode; label: string; desc: string }[] = [
-  { value: 'same',      label: 'Same direction',  desc: 'All parts at 0° — uniform grid layout' },
-  { value: 'back-back', label: 'Back-to-back',     desc: 'Alternate 0°/180° — pairs nest together' },
-  { value: 'chidori30', label: 'Chidori 30°',      desc: 'Stagger rows at 30° — tight chidori packing' },
-  { value: 'chidori60', label: 'Chidori 60°',      desc: 'Hex stagger at 60° — honeycomb packing' },
-  { value: 'free',      label: 'Free rotation',    desc: 'Test all angles — maximum yield search' },
-]
 
 function makeCirclePts(dia: number, seg = 64) {
   const r = dia / 2
@@ -62,9 +56,33 @@ export default function Page() {
     width: 500,
     height: 500,
     spacing: 5,
+    margin: 5,
     rotationStep: 1,
     layoutMode: 'same',
   })
+  const [lang, setLang] = useState<Lang>('en')
+  const [showLangMenu, setShowLangMenu] = useState(false)
+  const langMenuRef = useRef<HTMLDivElement>(null)
+  const t: TFunc = useMemo(() => makeTFunc(lang), [lang])
+
+  useEffect(() => {
+    if (!showLangMenu) return
+    function handleClick(e: MouseEvent) {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node))
+        setShowLangMenu(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showLangMenu])
+
+  const layoutOptions = useMemo(() => [
+    { value: 'same'     , label: t('sameDirection'), desc: t('sameDirectionDesc') },
+    { value: 'back-back', label: t('backToBack'),    desc: t('backToBackDesc')    },
+    { value: 'chidori30', label: t('chidori30'),     desc: t('chidori30Desc')     },
+    { value: 'chidori60', label: t('chidori60'),     desc: t('chidori60Desc')     },
+    { value: 'free'     , label: t('freeRotation'),  desc: t('freeRotationDesc')  },
+  ], [t])
+
   const [nestResult, setNestResult] = useState<NestResult | null>(null)
   const [editMode, setEditMode] = useState(false)
   const [editablePlaced, setEditablePlaced] = useState<PlacedPart[]>([])
@@ -82,7 +100,7 @@ export default function Page() {
   const [sheetMode, setSheetMode] = useState<'import' | 'dimensions'>('dimensions')
   const [sheetBoundary, setSheetBoundary] = useState<Point[] | null>(null)
   const [sheetObstacles, setSheetObstacles] = useState<Point[][]>([])
-  const [sheetImportInfo, setSheetImportInfo] = useState<string>('')
+  const [sheetImportInfo, setSheetImportInfo] = useState<number>(0)
 
   // Primitive shape inputs
   const [shapeType, setShapeType] = useState<ShapeType>('circle')
@@ -123,7 +141,7 @@ export default function Page() {
       return n.endsWith('.svg') || n.endsWith('.dxf') || n.endsWith('.igs') || n.endsWith('.iges') || f.type === 'image/svg+xml'
     })
     if (valid.length === 0) {
-      setErrorMsg('Please upload SVG or DXF files')
+      setErrorMsg(t('errInvalidFile'))
       setStatus('error')
       return
     }
@@ -131,7 +149,7 @@ export default function Page() {
       const results = await Promise.all(valid.map(f => parseFile(f)))
       const allParsed = results.flat()
       if (allParsed.length === 0) {
-        setErrorMsg('No closed shapes found in files')
+        setErrorMsg(t('errNoShapes'))
         setStatus('error')
         return
       }
@@ -140,10 +158,10 @@ export default function Page() {
       setStatus('idle')
       setErrorMsg('')
     } catch {
-      setErrorMsg('Failed to parse file')
+      setErrorMsg(t('errParseFail'))
       setStatus('error')
     }
-  }, [])
+  }, [t])
 
   const handleSheetFile = useCallback(async (files: File[]) => {
     const file = files[0]
@@ -151,13 +169,13 @@ export default function Page() {
     try {
       const result = await parseFileForSheet(file)
       if (!result) {
-        setErrorMsg('No closed shapes found in sheet file')
+        setErrorMsg(t('errNoSheetShapes'))
         setStatus('error')
         return
       }
       setSheetBoundary(result.boundary)
       setSheetObstacles(result.obstacles)
-      setSheetImportInfo(`1 boundary + ${result.obstacles.length} obstacle${result.obstacles.length !== 1 ? 's' : ''}`)
+      setSheetImportInfo(result.obstacles.length)
       setSheetConfig(prev => ({
         ...prev,
         width: Math.max(1, result.width),
@@ -168,15 +186,15 @@ export default function Page() {
       setStatus('idle')
       setErrorMsg('')
     } catch {
-      setErrorMsg('Failed to parse sheet file')
+      setErrorMsg(t('errSheetParseFail'))
       setStatus('error')
     }
-  }, [])
+  }, [t])
 
   function clearSheetImport() {
     setSheetBoundary(null)
     setSheetObstacles([])
-    setSheetImportInfo('')
+    setSheetImportInfo(0)
     setSheetMode('dimensions')
     setNestResult(null)
     setStatus('idle')
@@ -246,7 +264,7 @@ export default function Page() {
   }, [parts, sheetConfig])
 
 
-  const selectedLayout = LAYOUT_OPTIONS.find(o => o.value === sheetConfig.layoutMode)
+  const selectedLayout = layoutOptions.find(o => o.value === sheetConfig.layoutMode)
 
   const wasteInfo = useMemo(() => {
     if (!nestResult || nestResult.placed.length === 0) return null
@@ -277,16 +295,41 @@ export default function Page() {
         className="w-72 shrink-0 flex flex-col bg-slate-900 border-r border-slate-700 overflow-y-auto"
       >
         {/* Header */}
-        <div className="p-4 border-b border-slate-700">
-          <h1 className="text-base font-semibold text-slate-200">
-            Noda Nesting App
-          </h1>
-          <p className="text-[10px] text-slate-600 mt-0.5">by okadev</p>
+        <div className="px-4 pt-4 pb-3 border-b border-slate-700">
+          <div className="flex items-center justify-between">
+            <h1 className="text-base font-semibold text-slate-200">{t('appName')}</h1>
+            <div className="relative" ref={langMenuRef}>
+              <button
+                onClick={() => setShowLangMenu(v => !v)}
+                className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                title="Language"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+              </button>
+              {showLangMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[80px]">
+                  {LANGS.map(l => (
+                    <button key={l.code}
+                      onClick={() => { setLang(l.code); setShowLangMenu(false) }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                        lang === l.code ? 'text-blue-400 font-medium' : 'text-slate-300 hover:text-slate-100 hover:bg-slate-700'
+                      }`}>
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-600 mt-0.5">{t('appBy')}</p>
         </div>
 
         {/* Parts section */}
         <div className="px-4 pb-3 pt-4">
-          <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-2">Parts</div>
+          <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-2">{t('parts')}</div>
 
           {/* Mode radio */}
           <div className="flex rounded-lg overflow-hidden border border-slate-700 mb-3">
@@ -300,7 +343,7 @@ export default function Page() {
                     : 'bg-slate-800/50 text-slate-500 hover:text-slate-300'
                 }`}
               >
-                {mode === 'quick' ? 'Quick shapes' : 'Import parts'}
+                {mode === 'quick' ? t('quickShapes') : t('importParts')}
               </button>
             ))}
           </div>
@@ -310,10 +353,10 @@ export default function Page() {
               {/* Shape type selector */}
               <div className="flex gap-1 mb-3">
                 {([
-                  { type: 'circle',   icon: <circle cx="7" cy="7" r="5.5"/>,           label: 'Circle' },
-                  { type: 'rect',     icon: <rect x="1.5" y="3" width="11" height="8" rx="0.5"/>, label: 'Rect' },
-                  { type: 'triangle', icon: <polygon points="7,1.5 13,12.5 1,12.5"/>,   label: 'Triangle' },
-                ] as { type: ShapeType; icon: React.ReactNode; label: string }[]).map(s => (
+                  { type: 'circle'  , icon: <circle cx="7" cy="7" r="5.5"/>,                      labelKey: 'circle'   },
+                  { type: 'rect'    , icon: <rect x="1.5" y="3" width="11" height="8" rx="0.5"/>, labelKey: 'rect'     },
+                  { type: 'triangle', icon: <polygon points="7,1.5 13,12.5 1,12.5"/>,             labelKey: 'triangle' },
+                ] as { type: ShapeType; icon: React.ReactNode; labelKey: string }[]).map(s => (
                   <button
                     key={s.type}
                     onClick={() => setShapeType(s.type)}
@@ -326,7 +369,7 @@ export default function Page() {
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4">
                       {s.icon}
                     </svg>
-                    {s.label}
+                    {t(s.labelKey)}
                   </button>
                 ))}
               </div>
@@ -335,7 +378,7 @@ export default function Page() {
               <div className="bg-slate-800 rounded-lg p-2.5 space-y-2">
                 {shapeType === 'circle' && (
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-500 shrink-0">Diameter</span>
+                    <span className="text-[11px] text-slate-500 shrink-0">{t('diameter')}</span>
                     <input
                       type="number" min="1" value={circleDia}
                       onChange={e => setCircleDia(e.target.value)}
@@ -390,7 +433,7 @@ export default function Page() {
 
                 <button onClick={addShape}
                   className="w-full py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors">
-                  + Add {shapeType === 'circle' ? 'Circle' : shapeType === 'rect' ? 'Rectangle' : 'Triangle'}
+                  {t(shapeType === 'circle' ? 'addCircle' : shapeType === 'rect' ? 'addRectangle' : 'addTriangle')}
                 </button>
               </div>
             </>
@@ -403,8 +446,8 @@ export default function Page() {
                 onDrop={e => { e.preventDefault(); const f = Array.from(e.dataTransfer.files); if (f.length) handleFiles(f) }}
                 onDragOver={e => e.preventDefault()}
               >
-                <p className="text-xs text-slate-400">Drop SVG / DXF / IGS or click</p>
-                <p className="text-[10px] text-slate-600 mt-1">Multiple files supported</p>
+                <p className="text-xs text-slate-400">{t('dropPartsHint')}</p>
+                <p className="text-[10px] text-slate-600 mt-1">{t('multipleFilesSupported')}</p>
               </div>
               <input
                 ref={fileInputRef}
@@ -428,13 +471,13 @@ export default function Page() {
             <div className="border-t border-slate-700 mb-2" />
             <div className="flex items-center justify-between mb-2">
               <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
-                Parts ({parts.length})
+                {t('partsCount', { n: parts.length })}
               </span>
               <button
                 onClick={() => { setParts([]); setNestResult(null); setStatus('idle'); setErrorMsg('') }}
                 className="text-[11px] text-slate-500 hover:text-red-400 transition-colors"
               >
-                Clear all
+                {t('clearAll')}
               </button>
             </div>
             <div className="space-y-1 max-h-48 overflow-y-auto">
@@ -465,7 +508,7 @@ export default function Page() {
 
         {/* Sheet settings */}
         <div className="px-4 pb-4 space-y-3">
-          <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Sheet</div>
+          <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{t('sheet')}</div>
 
           {/* Mode radio */}
           <div className="flex rounded-lg overflow-hidden border border-slate-700">
@@ -482,7 +525,7 @@ export default function Page() {
                     : 'bg-slate-800/50 text-slate-500 hover:text-slate-300'
                 }`}
               >
-                {mode === 'dimensions' ? 'Dimensions' : 'Import sheet'}
+                {mode === 'dimensions' ? t('dimensions') : t('importSheet')}
               </button>
             ))}
           </div>
@@ -494,19 +537,19 @@ export default function Page() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-                    <span className="text-[11px] text-slate-300">{sheetImportInfo}</span>
+                    <span className="text-[11px] text-slate-300">{sheetConfig.width} × {sheetConfig.height} mm</span>
                   </div>
                   <button
                     onClick={clearSheetImport}
                     className="text-[11px] text-slate-500 hover:text-red-400 transition-colors"
                   >
-                    Clear
+                    {t('clear')}
                   </button>
                 </div>
-                {sheetObstacles.length > 0 && (
+                {sheetImportInfo > 0 && (
                   <div className="flex items-center gap-1.5">
                     <div className="w-2 h-2 rounded bg-red-500/60 shrink-0" />
-                    <span className="text-[10px] text-red-400">{sheetObstacles.length} no-cut zone{sheetObstacles.length !== 1 ? 's' : ''}</span>
+                    <span className="text-[10px] text-red-400">{t('noCutZones', { n: sheetImportInfo })}</span>
                   </div>
                 )}
               </div>
@@ -517,15 +560,15 @@ export default function Page() {
                 onDrop={e => { e.preventDefault(); const f = Array.from(e.dataTransfer.files); if (f.length) handleSheetFile(f) }}
                 onDragOver={e => e.preventDefault()}
               >
-                <p className="text-xs text-slate-400">Drop SVG / DXF or click</p>
-                <p className="text-[10px] text-slate-600 mt-1">Largest shape = boundary · others = no-cut zones</p>
+                <p className="text-xs text-slate-400">{t('dropSheetHint')}</p>
+                <p className="text-[10px] text-slate-600 mt-1">{t('sheetHintSub')}</p>
               </div>
             )
           ) : (
             /* Dimensions mode */
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">Width (mm)</label>
+                <label className="text-[11px] text-slate-400 block mb-1">{t('width')}</label>
                 <input
                   type="number" min="1" value={sheetConfig.width}
                   onChange={e => setSheetConfig(p => ({ ...p, width: Number(e.target.value) }))}
@@ -533,7 +576,7 @@ export default function Page() {
                 />
               </div>
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">Height (mm)</label>
+                <label className="text-[11px] text-slate-400 block mb-1">{t('height')}</label>
                 <input
                   type="number" min="1" value={sheetConfig.height}
                   onChange={e => setSheetConfig(p => ({ ...p, height: Number(e.target.value) }))}
@@ -555,26 +598,56 @@ export default function Page() {
           />
 
           <div className="border-t border-slate-700 -mx-0 pt-3 -mb-0">
-            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Layout</div>
+            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{t('layout')}</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="flex items-center gap-1 mb-1">
+                <label className="text-[11px] text-slate-400">{t('spacing')}</label>
+                <div className="relative group">
+                  <span className="w-3.5 h-3.5 rounded-full bg-slate-700 text-slate-500 text-[9px] flex items-center justify-center cursor-default select-none">?</span>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-50 pointer-events-none w-40">
+                    <div className="bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 text-[10px] text-slate-300 leading-relaxed shadow-xl">
+                      {t('spacingTooltip')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <input
+                type="number" min="0" step="0.5" value={sheetConfig.spacing}
+                onChange={e => setSheetConfig(p => ({ ...p, spacing: Number(e.target.value) }))}
+                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-400"
+              />
+            </div>
+            <div>
+              <div className="flex items-center gap-1 mb-1">
+                <label className="text-[11px] text-slate-400">{t('margin')}</label>
+                <div className="relative group">
+                  <span className="w-3.5 h-3.5 rounded-full bg-slate-700 text-slate-500 text-[9px] flex items-center justify-center cursor-default select-none">?</span>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-50 pointer-events-none w-40">
+                    <div className="bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 text-[10px] text-slate-300 leading-relaxed shadow-xl">
+                      {t('marginTooltip')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <input
+                type="number" min="0" step="0.5" value={sheetConfig.margin}
+                onChange={e => setSheetConfig(p => ({ ...p, margin: Number(e.target.value) }))}
+                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-400"
+              />
+            </div>
           </div>
 
           <div>
-            <label className="text-[11px] text-slate-400 block mb-1">Spacing (mm)</label>
-            <input
-              type="number" min="0" step="0.5" value={sheetConfig.spacing}
-              onChange={e => setSheetConfig(p => ({ ...p, spacing: Number(e.target.value) }))}
-              className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-400"
-            />
-          </div>
-
-          <div>
-            <label className="text-[11px] text-slate-400 block mb-1">Layout mode</label>
+            <label className="text-[11px] text-slate-400 block mb-1">{t('layoutMode')}</label>
             <select
               value={sheetConfig.layoutMode}
               onChange={e => setSheetConfig(p => ({ ...p, layoutMode: e.target.value as LayoutMode }))}
               className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-400 appearance-none cursor-pointer"
             >
-              {LAYOUT_OPTIONS.map(opt => (
+              {layoutOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -591,14 +664,14 @@ export default function Page() {
             disabled={parts.length === 0 || status === 'running'}
             className="flex-1 py-2 rounded bg-blue-950 hover:bg-blue-900 disabled:bg-slate-800 disabled:text-slate-600 text-blue-400 font-medium text-sm transition-colors border border-blue-500/20 disabled:border-transparent"
           >
-            {status === 'running' ? 'Running…' : 'Run Nesting'}
+            {status === 'running' ? t('running') : t('runNesting')}
           </button>
           {status === 'running' && (
             <button
               onClick={handleCancel}
               className="px-3 py-2 rounded bg-slate-800 hover:bg-red-950 text-slate-400 hover:text-red-400 font-medium text-sm transition-colors border border-slate-600 hover:border-red-500/30"
             >
-              Cancel
+              {t('cancel')}
             </button>
           )}
         </div>
@@ -606,24 +679,24 @@ export default function Page() {
         {/* Result */}
         {status === 'done' && nestResult && (
           <div className="px-4 pb-4 space-y-1.5">
-            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Result</div>
+            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{t('result')}</div>
             <div className="bg-slate-800 rounded p-3 space-y-2 text-xs">
               <div className="flex justify-between">
-                <span className="text-slate-400">Per sheet</span>
-                <span className="text-slate-200 font-semibold">{nestResult.placed.length} pcs</span>
+                <span className="text-slate-400">{t('perSheet')}</span>
+                <span className="text-slate-200 font-semibold">{nestResult.placed.length} {t('pcs')}</span>
               </div>
               {labelCounts.size > 1 && (
                 <div className="border-t border-slate-700 pt-2 space-y-1">
                   {Array.from(labelCounts.entries()).map(([label, count]) => (
                     <div key={label} className="flex justify-between">
                       <span className="text-slate-400">{label}</span>
-                      <span className="font-mono text-slate-200">{count} pcs</span>
+                      <span className="font-mono text-slate-200">{count} {t('pcs')}</span>
                     </div>
                   ))}
                 </div>
               )}
               <div className="flex justify-between items-center">
-                <span className="text-slate-400">Utilization</span>
+                <span className="text-slate-400">{t('utilization')}</span>
                 <span className={`font-semibold ${nestResult.efficiency >= 80 ? 'text-emerald-400' : nestResult.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
                   {nestResult.efficiency}%
                 </span>
@@ -633,15 +706,15 @@ export default function Page() {
               </div>
               {wasteInfo && (
                 <div className="border-t border-slate-700 pt-2 space-y-1">
-                  <div className="text-slate-500 mb-1">Waste (each side)</div>
+                  <div className="text-slate-500 mb-1">{t('wasteEachSide')}</div>
                   {([
-                    { label: 'Top',    val: wasteInfo.top },
-                    { label: 'Bottom', val: wasteInfo.bottom },
-                    { label: 'Left',   val: wasteInfo.left },
-                    { label: 'Right',  val: wasteInfo.right },
-                  ]).map(({ label, val }) => (
-                    <div key={label} className="flex justify-between">
-                      <span className="text-slate-400">{label}</span>
+                    { labelKey: 'top',    val: wasteInfo.top },
+                    { labelKey: 'bottom', val: wasteInfo.bottom },
+                    { labelKey: 'left',   val: wasteInfo.left },
+                    { labelKey: 'right',  val: wasteInfo.right },
+                  ]).map(({ labelKey, val }) => (
+                    <div key={labelKey} className="flex justify-between">
+                      <span className="text-slate-400">{t(labelKey)}</span>
                       <span className={`font-mono ${val > 0 ? 'text-orange-400' : 'text-slate-600'}`}>
                         {val} mm
                       </span>
@@ -650,7 +723,7 @@ export default function Page() {
                 </div>
               )}
               <div className="flex justify-between">
-                <span className="text-slate-400">Loss area</span>
+                <span className="text-slate-400">{t('lossArea')}</span>
                 <span className="text-slate-400">{(nestResult.lossArea / 100).toFixed(0)} cm²</span>
               </div>
             </div>
@@ -678,6 +751,7 @@ export default function Page() {
           onEditModeChange={setEditMode}
           editablePlaced={editablePlaced}
           onPlacedChange={setEditablePlaced}
+          t={t}
         />
       </div>
     </div>

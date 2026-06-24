@@ -48,7 +48,7 @@ function computeEdgeStraight(pts) {
     isChamfer[i] = len < 0.001 || len < 0.2 * prev || len < 0.2 * next;
   }
 
-  // Step 3: vertex is hard only if neither adjacent edge is a chamfer AND angle sin >= 0.15
+  // Step 3: vertex is hard only if neither adjacent edge is a chamfer AND angle sin >= 0.5 (≈30°)
   var vertexHard = new Array(n);
   for (var i = 0; i < n; i++) {
     if (isChamfer[(i - 1 + n) % n] || isChamfer[i]) { vertexHard[i] = false; continue; }
@@ -60,10 +60,10 @@ function computeEdgeStraight(pts) {
     var cross = Math.abs(ax * by - ay * bx);
     var lenA = edgeLens[(i - 1 + n) % n];
     var lenB = edgeLens[i];
-    vertexHard[i] = (cross / (lenA * lenB)) >= 0.15;
+    vertexHard[i] = (cross / (lenA * lenB)) >= 0.5;
   }
 
-  // Step 4: edge is flush only if not a chamfer and both endpoints are hard
+  // Step 4: edge is straight only if not a chamfer AND both endpoints are hard corners.
   var edgeStr = new Array(n);
   for (var i = 0; i < n; i++) {
     edgeStr[i] = !isChamfer[i] && vertexHard[i] && vertexHard[(i + 1) % n];
@@ -558,205 +558,253 @@ function hasStraightOnFace(pts, edgeStr, face) {
 }
 
 // Pick best uniform rotation for same-direction mode.
-// Prefers rotations that put a straight edge on the RIGHT or BOTTOM face.
-// Falls back to the rotation that fits the most parts.
-function pickSameRotation(sortedPolygons, candidateRots, sw, sh, spacing) {
-  var MARGIN = 5;
+// Prefers rotations that put a straight edge on the RIGHT or large-Y face (visual bottom).
+// Counts rows using alternating rot/rot+180 logic to match nestSame.
+function pickSameRotation(sortedPolygons, candidateRots, sw, sh, spacing, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
   var tol = 0.001;
   var bestRot = candidateRots[0];
   var bestScore = -1;
 
   for (var ri = 0; ri < candidateRots.length; ri++) {
-    var rot = candidateRots[ri];
+    var rot0 = candidateRots[ri];
     var poly0 = sortedPolygons[0];
-    var pts = rot !== 0
-      ? rotatePoints(poly0.points, rot)
-      : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
-    var b0 = getBounds(pts);
-    pts = translate(pts, -b0.minX, -b0.minY);
-    var b = getBounds(pts);
-    var w = b.maxX, h = b.maxY;
-    if (w > sw - 2 * MARGIN + tol || h > sh - 2 * MARGIN + tol) continue;
+
+    var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+    var b0 = getBounds(p0); p0 = translate(p0, -b0.minX, -b0.minY);
+    var w0 = getBounds(p0).maxX, h0 = getBounds(p0).maxY;
+    if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) continue;
+
     var es = poly0.edgeStr;
-    var gapH = (hasStraightOnFace(pts, es, 'right') && hasStraightOnFace(pts, es, 'left'))  ? 0 : spacing;
-    var gapV = (hasStraightOnFace(pts, es, 'bottom') && hasStraightOnFace(pts, es, 'top')) ? 0 : spacing;
-    var perRow = Math.floor((sw - 2 * MARGIN + gapH) / (w + gapH));
-    var rows   = Math.floor((sh - 2 * MARGIN + gapV) / (h + gapV));
-    if (perRow < 1 || rows < 1) continue;
-    var count = perRow * rows;
-    var bonus = 0;
-    if (hasStraightOnFace(pts, es, 'right') || hasStraightOnFace(pts, es, 'bottom')) bonus = 1;
-    var score = count * 10 + bonus;
-    if (score > bestScore) { bestScore = score; bestRot = rot; }
+    var gapH   = (hasStraightOnFace(p0, es, 'right') && hasStraightOnFace(p0, es, 'left'))   ? 0 : spacing;
+    var gapRow = (hasStraightOnFace(p0, es, 'top')   && hasStraightOnFace(p0, es, 'bottom')) ? 0 : spacing;
+
+    var perRow = Math.floor((sw - 2 * MARGIN + gapH) / (w0 + gapH));
+    if (perRow < 1) continue;
+
+    var rows = 0, y = MARGIN;
+    while (true) {
+      if (y + h0 + MARGIN > sh + tol) break;
+      rows++;
+      y += h0 + gapRow;
+    }
+    if (rows < 1) continue;
+
+    var bonus = (hasStraightOnFace(p0, es, 'top') || hasStraightOnFace(p0, es, 'right')) ? 1 : 0;
+    var score = perRow * rows * 10 + bonus;
+    if (score > bestScore) { bestScore = score; bestRot = rot0; }
   }
   return bestRot;
 }
 
-// Same-direction layout: uniform rotation, row-template grid, 5mm sheet margin.
-function nestSame(sorted, sw, sh, spacing, uniformRot, boundary) {
-  var MARGIN = 5;
+// Back-to-back rotation picker: tries all candidate rotations and scores by total pieces placed.
+// Strongly prefers rotations that put a straight edge on the RIGHT face (for flush horizontal pairing).
+function pickBackBackRotation(sortedPolygons, candidateRots, sw, sh, spacing, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
+  var tol = 0.001;
+  var bestRot = candidateRots[0];
+  var bestScore = -1;
+  var poly0 = sortedPolygons[0];
+
+  for (var ri = 0; ri < candidateRots.length; ri++) {
+    var rot0 = candidateRots[ri];
+    var rot1 = (rot0 + 180) % 360;
+
+    var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+    var b0 = getBounds(p0); p0 = translate(p0, -b0.minX, -b0.minY);
+    var w0 = getBounds(p0).maxX, h0 = getBounds(p0).maxY;
+    if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) continue;
+
+    var p1 = rot1 !== 0 ? rotatePoints(poly0.points, rot1) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+    var b1 = getBounds(p1); p1 = translate(p1, -b1.minX, -b1.minY);
+    var w1 = getBounds(p1).maxX, h1 = getBounds(p1).maxY;
+
+    var es = poly0.edgeStr;
+    var gapR0R1 = (hasStraightOnFace(p0, es, 'right') && hasStraightOnFace(p1, es, 'left'))  ? 0 : spacing;
+    var gapR1R0 = (hasStraightOnFace(p1, es, 'right') && hasStraightOnFace(p0, es, 'left'))  ? 0 : spacing;
+    var gap_y   = (hasStraightOnFace(p0, es, 'top')   && hasStraightOnFace(p0, es, 'bottom')) ? 0 : spacing;
+    var rowH    = Math.max(h0, h1);
+
+    var perRow = 0, cx = MARGIN, si = 0;
+    while (true) {
+      var cw = (si % 2 === 0) ? w0 : w1;
+      if (cx + cw + MARGIN > sw + tol) break;
+      perRow++;
+      cx += cw + ((si % 2 === 0) ? gapR0R1 : gapR1R0);
+      si++;
+    }
+    if (perRow < 1) continue;
+
+    var rows = 0, cy = MARGIN;
+    while (cy + rowH + MARGIN <= sh + tol) { rows++; cy += rowH + gap_y; }
+    if (rows < 1) continue;
+
+    var bonus = (hasStraightOnFace(p0, es, 'right') ? 10000 : 0) + (gapR0R1 === 0 ? 1000 : 0) + (gap_y === 0 ? 100 : 0);
+    var score  = perRow * rows * 100000 + bonus;
+    if (score > bestScore) { bestScore = score; bestRot = rot0; }
+  }
+  return bestRot;
+}
+
+// Back-to-back layout:
+//   Row pattern (left→right): rot0, rot1, rot0, rot1, …
+//   gap between rot0→rot1: 0 if right face of rot0 AND left face of rot1 are both straight.
+//   gap between rot1→rot0: 0 if right face of rot1 AND left face of rot0 are both straight.
+//   Rows repeat the same pattern downward.
+//   gap_y: 0 if bottom face (maxY) of every piece AND top face (minY) of every piece are straight.
+function nestBackBack(sorted, sw, sh, spacing, uniformRot, boundary, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
   var tol = 0.001;
   var results = [];
   var unplaced = [];
+  if (sorted.length === 0) return { results: results, unplaced: unplaced };
 
-  var rot = uniformRot !== null ? uniformRot : 0;
+  var rot0 = uniformRot !== null ? uniformRot : 0;
+  var rot1 = (rot0 + 180) % 360;
 
-  // Rotate and normalize all parts
-  var prep = [];
-  for (var i = 0; i < sorted.length; i++) {
-    var poly = sorted[i];
-    var pts = rot !== 0
-      ? rotatePoints(poly.points, rot)
-      : poly.points.map(function(p) { return { x: p.x, y: p.y }; });
-    var b0 = getBounds(pts);
-    pts = translate(pts, -b0.minX, -b0.minY);
-    var b = getBounds(pts);
-    var w = b.maxX, h = b.maxY;
-    if (w > sw - 2 * MARGIN + tol || h > sh - 2 * MARGIN + tol) {
-      unplaced.push(poly.id); continue;
-    }
-    prep.push({ poly: poly, pts: pts, w: w, h: h, b0: b0 });
+  var poly0 = sorted[0];
+  var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+  var b0r = getBounds(p0); p0 = translate(p0, -b0r.minX, -b0r.minY);
+  var w0 = getBounds(p0).maxX, h0 = getBounds(p0).maxY;
+
+  var p1 = rot1 !== 0 ? rotatePoints(poly0.points, rot1) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+  var b1r = getBounds(p1); p1 = translate(p1, -b1r.minX, -b1r.minY);
+  var w1 = getBounds(p1).maxX, h1 = getBounds(p1).maxY;
+
+  if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) {
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
+    return { results: results, unplaced: unplaced };
   }
 
-  if (prep.length === 0) return { results: results, unplaced: unplaced };
+  var es = poly0.edgeStr;
+  var gapR0R1 = (hasStraightOnFace(p0, es, 'right') && hasStraightOnFace(p1, es, 'left'))  ? 0 : spacing;
+  var gapR1R0 = (hasStraightOnFace(p1, es, 'right') && hasStraightOnFace(p0, es, 'left'))  ? 0 : spacing;
+  var gap_y   = (hasStraightOnFace(p0, es, 'top')   && hasStraightOnFace(p0, es, 'bottom')) ? 0 : spacing;
+  var rowH    = Math.max(h0, h1);
 
-  // Gaps: 0 if both touching faces are straight, else spacing
-  var rep = prep[0];
-  var repEs = rep.poly.edgeStr;
-  var gapH = (hasStraightOnFace(rep.pts, repEs, 'right') && hasStraightOnFace(rep.pts, repEs, 'left'))   ? 0 : spacing;
-  var gapV = (hasStraightOnFace(rep.pts, repEs, 'bottom') && hasStraightOnFace(rep.pts, repEs, 'top')) ? 0 : spacing;
-
-  // Build row 1 template: x positions and widths for each slot
+  // Build row slot template: alternating rot0 / rot1 with per-pair gaps
   var rowSlots = [];
-  var curX = MARGIN;
-  var ti = 0;
-  while (ti < prep.length) {
-    var pw = prep[ti].w;
-    if (curX + pw + MARGIN > sw + tol) break;
-    rowSlots.push({ x: curX, w: pw });
-    curX += pw + gapH;
-    ti++;
+  var x = MARGIN, sIdx = 0;
+  while (true) {
+    var isEven = (sIdx % 2 === 0);
+    var cw = isEven ? w0 : w1;
+    if (x + cw + MARGIN > sw + tol) break;
+    rowSlots.push({ x: x, rot: isEven ? rot0 : rot1 });
+    x += cw + (isEven ? gapR0R1 : gapR1R0);
+    sIdx++;
   }
 
   if (rowSlots.length === 0) {
-    for (var i = 0; i < prep.length; i++) unplaced.push(prep[i].poly.id);
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
+    return { results: results, unplaced: unplaced };
+  }
+
+  var pi = 0;
+  var rowY = MARGIN;
+
+  while (pi < sorted.length) {
+    if (rowY + rowH + MARGIN > sh + tol) break;
+
+    for (var slot = 0; slot < rowSlots.length && pi < sorted.length; slot++) {
+      var poly = sorted[pi];
+      var curRot = rowSlots[slot].rot;
+      var pts = curRot !== 0 ? rotatePoints(poly.points, curRot) : poly.points.map(function(p) { return { x: p.x, y: p.y }; });
+      var b = getBounds(pts);
+      pts = translate(pts, -b.minX, -b.minY);
+      var tx = rowSlots[slot].x;
+      var moved = translate(pts, tx, rowY);
+      var holes = transformHoles(poly.holes, curRot, -b.minX, -b.minY, tx, rowY);
+      results.push({ id: poly.id, label: poly.label, points: moved, holes: holes, rotation: curRot, color: poly.color });
+      pi++;
+    }
+
+    rowY += rowH + gap_y;
+  }
+
+  self.postMessage({ type: 'progress', placed: results, current: pi, total: sorted.length });
+  for (var j = pi; j < sorted.length; j++) unplaced.push(sorted[j].id);
+  return { results: results, unplaced: unplaced };
+}
+
+// Same-direction layout: all pieces at the same rotation (uniformRot).
+// Gap between pieces (H): 0 if both left and right faces are straight, else spacing.
+// Gap between rows: 0 if both top and bottom faces are straight, else spacing.
+function nestSame(sorted, sw, sh, spacing, uniformRot, boundary, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
+  var tol = 0.001;
+  var results = [];
+  var unplaced = [];
+  if (sorted.length === 0) return { results: results, unplaced: unplaced };
+
+  var rot0 = uniformRot !== null ? uniformRot : 0;
+
+  var poly0 = sorted[0];
+  var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+  var b0r = getBounds(p0); p0 = translate(p0, -b0r.minX, -b0r.minY);
+  var w0 = getBounds(p0).maxX, h0 = getBounds(p0).maxY;
+
+  if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) {
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
+    return { results: results, unplaced: unplaced };
+  }
+
+  var es = poly0.edgeStr;
+  var gapH   = (hasStraightOnFace(p0, es, 'right') && hasStraightOnFace(p0, es, 'left'))   ? 0 : spacing;
+  var gapRow = (hasStraightOnFace(p0, es, 'top')   && hasStraightOnFace(p0, es, 'bottom')) ? 0 : spacing;
+
+  var rowSlots = [];
+  var curX = MARGIN;
+  while (curX + w0 + MARGIN <= sw + tol) {
+    rowSlots.push(curX);
+    curX += w0 + gapH;
+  }
+
+  if (rowSlots.length === 0) {
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
     return { results: results, unplaced: unplaced };
   }
 
   var perRow = rowSlots.length;
-
-  // Row height: max of parts used in row 1
-  var rowH = 0;
-  for (var ri = 0; ri < perRow; ri++) rowH = Math.max(rowH, prep[ri].h);
-
-  // Place rows
   var pi = 0;
   var rowY = MARGIN;
 
-  while (pi < prep.length) {
-    if (rowY + rowH + MARGIN > sh + tol) break;
-    for (var slot = 0; slot < perRow && pi < prep.length; slot++) {
-      var p = prep[pi];
-      var tx = rowSlots[slot].x;
+  while (pi < sorted.length) {
+    if (rowY + h0 + MARGIN > sh + tol) break;
+
+    for (var slot = 0; slot < perRow && pi < sorted.length; slot++) {
+      var poly = sorted[pi];
+      var pts = rot0 !== 0 ? rotatePoints(poly.points, rot0) : poly.points.map(function(p) { return { x: p.x, y: p.y }; });
+      var b0 = getBounds(pts);
+      pts = translate(pts, -b0.minX, -b0.minY);
+      var tx = rowSlots[slot];
       var ty = rowY;
-      var moved = translate(p.pts, tx, ty);
-      var holes = transformHoles(p.poly.holes, rot, -p.b0.minX, -p.b0.minY, tx, ty);
-      results.push({ id: p.poly.id, label: p.poly.label, points: moved, holes: holes, rotation: rot, color: p.poly.color });
+      var moved = translate(pts, tx, ty);
+      var holes = transformHoles(poly.holes, rot0, -b0.minX, -b0.minY, tx, ty);
+      results.push({ id: poly.id, label: poly.label, points: moved, holes: holes, rotation: rot0, color: poly.color });
       pi++;
     }
-    rowY += rowH + gapV;
-    self.postMessage({ type: 'progress', placed: results, current: pi, total: sorted.length });
+
+    rowY += h0 + gapRow;
   }
 
-  for (var j = pi; j < prep.length; j++) unplaced.push(prep[j].poly.id);
+  self.postMessage({ type: 'progress', placed: results, current: pi, total: sorted.length });
+  for (var j = pi; j < sorted.length; j++) unplaced.push(sorted[j].id);
   return { results: results, unplaced: unplaced };
 }
 
-function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPlaced, initBounds, initEdgeStr, boundary) {
+// Chidori-only structured layout (chidori60 / chidori30).
+function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPlaced, initBounds, initEdgeStr, boundary, margin) {
+  var MARGIN = (typeof margin === 'number' && !boundary) ? margin : 0;
+  var esw = sw - 2 * MARGIN;
+  var esh = sh - 2 * MARGIN;
   var results = [];
-  var placed = initPlaced.slice();
-  var placedBounds = initBounds.slice();
+  var placed = MARGIN > 0
+    ? initPlaced.map(function(pts) { return translate(pts, -MARGIN, -MARGIN); })
+    : initPlaced.slice();
+  var placedBounds = placed.map(getBounds);
   var placedEdgeStr = initEdgeStr.slice();
   var unplaced = [];
-  var isChidori = layoutMode === 'chidori60' || layoutMode === 'chidori30';
   var tol = 0.001;
-
-  if (!isChidori) {
-    var MAX_SRC2 = 12;
-    for (var si2 = 0; si2 < sorted.length; si2++) {
-      var poly2 = sorted[si2];
-      var myEdgeStr2 = poly2.edgeStr;
-      var rot2;
-      if (layoutMode === 'back-back') {
-        var base2 = uniformRot !== null ? uniformRot : 0;
-        rot2 = si2 % 2 === 0 ? base2 : (base2 + 180) % 360;
-      } else {
-        rot2 = uniformRot !== null ? uniformRot : 0;
-      }
-      var pts2 = rot2 !== 0
-        ? rotatePoints(poly2.points, rot2)
-        : poly2.points.map(function(p) { return { x: p.x, y: p.y }; });
-      var b02 = getBounds(pts2);
-      pts2 = translate(pts2, -b02.minX, -b02.minY);
-      var b2 = getBounds(pts2);
-      var w2 = b2.maxX, h2 = b2.maxY;
-
-      if (w2 > sw || h2 > sh) {
-        unplaced.push(poly2.id); continue;
-      }
-
-      var srcStart2 = Math.max(0, placed.length - MAX_SRC2);
-      var cands2 = buildCandidates(
-        placed.slice(srcStart2), placedBounds.slice(srcStart2), placedEdgeStr.slice(srcStart2),
-        pts2, w2, h2, sw, sh, spacing, myEdgeStr2, boundary
-      );
-
-      var rowH2 = h2 + spacing;
-      cands2.sort(function(a, b) {
-        var ra = Math.floor(a[1] / rowH2);
-        var rb = Math.floor(b[1] / rowH2);
-        return ra !== rb ? ra - rb : a[0] - b[0];
-      });
-
-      // Back-to-back: for the partner (odd) part, try the straight-face-adjacent
-      // position first — before bottom-left candidates that may touch a curved edge.
-      if (layoutMode === 'back-back' && si2 % 2 === 1 && placed.length > 0) {
-        var prevPb2 = placedBounds[placed.length - 1];
-        var prevPts2x = placed[placed.length - 1];
-        var prevEs2 = placedEdgeStr[placed.length - 1];
-        var face2 = getStraightEdgeFace(prevPts2x, prevEs2);
-        var pc2;
-        if (face2 === 'right')  pc2 = [prevPb2.maxX, prevPb2.minY];
-        else if (face2 === 'left')  pc2 = [prevPb2.minX - w2, prevPb2.minY];
-        else if (face2 === 'top')   pc2 = [prevPb2.minX, prevPb2.maxY];
-        else                        pc2 = [prevPb2.minX, prevPb2.minY - h2];
-        cands2 = [pc2].concat(cands2);
-      }
-
-      var ok2 = false;
-      for (var ci2 = 0; ci2 < cands2.length; ci2++) {
-        var moved2 = translate(pts2, cands2[ci2][0], cands2[ci2][1]);
-        var mb2 = getBounds(moved2);
-        var validBounds2 = boundary
-          ? isFullyInsideBoundary(moved2, boundary)
-          : (mb2.minX >= -tol && mb2.minY >= -tol && mb2.maxX <= sw + tol && mb2.maxY <= sh + tol);
-        if (!validBounds2) continue;
-        if (!overlapsAny(moved2, myEdgeStr2, placed, placedBounds, placedEdgeStr, spacing)) {
-          placed.push(moved2); placedBounds.push(mb2); placedEdgeStr.push(myEdgeStr2);
-          var holes2 = transformHoles(poly2.holes, rot2, -b02.minX, -b02.minY, cands2[ci2][0], cands2[ci2][1]);
-          results.push({ id: poly2.id, label: poly2.label, points: moved2, holes: holes2, rotation: rot2, color: poly2.color });
-          ok2 = true;
-          break;
-        }
-      }
-      if (!ok2) unplaced.push(poly2.id);
-
-      if ((si2 + 1) % 3 === 0 || si2 === sorted.length - 1) {
-        self.postMessage({ type: 'progress', placed: results, current: si2 + 1, total: sorted.length });
-      }
-    }
-    return { results: results, unplaced: unplaced };
-  }
 
   // Chidori
   var cellPitch = 0;
@@ -769,7 +817,7 @@ function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPla
     var pp0n = translate(pp0, -pb00.minX, -pb00.minY);
     var pb0n = getBounds(pp0n);
     var pw = pb0n.maxX, phh = pb0n.maxY;
-    if (pw + 2 * spacing <= sw) {
+    if (pw + 2 * spacing <= esw) {
       var d = Math.max(pw, phh) + spacing;
       cellPitch = layoutMode === 'chidori60' ? d : d * Math.sqrt(3);
       break;
@@ -795,20 +843,20 @@ function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPla
     var b = getBounds(pts);
     var w = b.maxX, h = b.maxY;
 
-    if (w + 2 * spacing > sw || h + 2 * spacing > sh) {
+    if (w + 2 * spacing > esw || h + 2 * spacing > esh) {
       unplaced.push(poly.id); continue;
     }
 
-    if (shelfX + w + spacing > sw + tol) {
+    if (shelfX + w + spacing > esw + tol) {
       shelfIdx++;
       shelfX = spacing + (shelfIdx % 2 === 1 ? cellPitch / 2 : 0);
-      if (shelfX + w + spacing > sw + tol) {
+      if (shelfX + w + spacing > esw + tol) {
         shelfIdx++;
         shelfX = spacing + (shelfIdx % 2 === 1 ? cellPitch / 2 : 0);
       }
     }
 
-    var y = dropY(pts, shelfX, placed, placedBounds, placedEdgeStr, sh, spacing, myEdgeStrC);
+    var y = dropY(pts, shelfX, placed, placedBounds, placedEdgeStr, esh, spacing, myEdgeStrC);
     if (y === null) { unplaced.push(poly.id); continue; }
 
     var moved = translate(pts, shelfX, y);
@@ -819,12 +867,14 @@ function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPla
       continue;
     }
 
-    if (mb.maxY > sh + tol || overlapsAny(moved, myEdgeStrC, placed, placedBounds, placedEdgeStr, spacing)) {
+    if (mb.maxY > esh + tol || overlapsAny(moved, myEdgeStrC, placed, placedBounds, placedEdgeStr, spacing)) {
       unplaced.push(poly.id);
     } else {
       placed.push(moved); placedBounds.push(mb); placedEdgeStr.push(myEdgeStrC);
       var holesC = transformHoles(poly.holes, rot, -b0.minX, -b0.minY, shelfX, y);
-      results.push({ id: poly.id, label: poly.label, points: moved, holes: holesC, rotation: rot, color: poly.color });
+      var finalMovedC = MARGIN > 0 ? translate(moved, MARGIN, MARGIN) : moved;
+      var finalHolesC = (MARGIN > 0 && holesC) ? holesC.map(function(h) { return translate(h, MARGIN, MARGIN); }) : holesC;
+      results.push({ id: poly.id, label: poly.label, points: finalMovedC, holes: finalHolesC, rotation: rot, color: poly.color });
       shelfX += cellPitch;
     }
 
@@ -840,6 +890,7 @@ function nest(polygons, sheetConfig) {
   var sw = sheetConfig.width;
   var sh = sheetConfig.height;
   var spacing = sheetConfig.spacing || 0;
+  var margin = typeof sheetConfig.margin === 'number' ? sheetConfig.margin : 5;
   var layoutMode = sheetConfig.layoutMode || 'free';
   var MAX_SRC = 12;
 
@@ -894,33 +945,93 @@ function nest(polygons, sheetConfig) {
   } else if (layoutMode === 'chidori30') {
     uniformRot = pickBestUniformRotation(sorted, CHIDORI30_ROTS, sw, sh, spacing, boundary);
   } else if (layoutMode === 'same') {
-    uniformRot = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing);
+    uniformRot = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
   } else if (layoutMode === 'back-back') {
-    uniformRot = pickBestUniformRotation(sorted, COARSE_ROTS, sw, sh, spacing, boundary);
+    uniformRot = pickBackBackRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
   }
 
   var finalResults, finalUnplaced;
 
   if (layoutMode === 'same') {
-    var out = nestSame(sorted, sw, sh, spacing, uniformRot, boundary);
+    var out = nestSame(sorted, sw, sh, spacing, uniformRot, boundary, margin);
+    finalResults = out.results;
+    finalUnplaced = out.unplaced;
+  } else if (layoutMode === 'back-back') {
+    var out = nestBackBack(sorted, sw, sh, spacing, uniformRot, boundary, margin);
     finalResults = out.results;
     finalUnplaced = out.unplaced;
   } else if (layoutMode !== 'free') {
-    var out = nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPlaced, initBounds, initEdgeStr, boundary);
+    var out = nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPlaced, initBounds, initEdgeStr, boundary, margin);
     finalResults = out.results;
     finalUnplaced = out.unplaced;
   } else {
-    var placed = initPlaced.slice();
-    var placedBounds = initBounds.slice();
-    var placedEdgeStr = initEdgeStr.slice();
-    var results = [], unplaced = [];
+    // Hybrid free rotation:
+    // 1) Try all 4 structured modes, pick the one that places the most shapes.
+    // 2) Fill remaining gaps with unconstrained rotation (SAT-based).
+    var MARGIN_FREE = (typeof margin === 'number' && !boundary) ? margin : 0;
+    var esw_free = sw - 2 * MARGIN_FREE;
+    var esh_free = sh - 2 * MARGIN_FREE;
 
-    for (var si = 0; si < sorted.length; si++) {
-      var poly = sorted[si];
+    var rotSameF = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
+    var outSameF = nestSame(sorted, sw, sh, spacing, rotSameF, boundary, margin);
+
+    var rotBBF = pickBackBackRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
+    var outBBF = nestBackBack(sorted, sw, sh, spacing, rotBBF, boundary, margin);
+
+    var rotC30F = pickBestUniformRotation(sorted, CHIDORI30_ROTS, sw, sh, spacing, boundary);
+    var outC30F = nestStructured(sorted, sw, sh, spacing, 'chidori30', rotC30F, initPlaced, initBounds, initEdgeStr, boundary, margin);
+
+    var rotC60F = pickBestUniformRotation(sorted, CHIDORI60_ROTS, sw, sh, spacing, boundary);
+    var outC60F = nestStructured(sorted, sw, sh, spacing, 'chidori60', rotC60F, initPlaced, initBounds, initEdgeStr, boundary, margin);
+
+    var structOutsF = [outSameF, outBBF, outC30F, outC60F];
+    var bestStructF = structOutsF[0];
+    for (var sciF = 1; sciF < structOutsF.length; sciF++) {
+      if (structOutsF[sciF].results.length > bestStructF.results.length) bestStructF = structOutsF[sciF];
+    }
+
+    // Build id→poly lookup for edgeStr
+    var idPolyF = {};
+    for (var ipF = 0; ipF < sorted.length; ipF++) idPolyF[sorted[ipF].id] = sorted[ipF];
+
+    // Build placed list from obstacles + best structured results (in free-rotation coords)
+    var placed = MARGIN_FREE > 0
+      ? initPlaced.map(function(pts) { return translate(pts, -MARGIN_FREE, -MARGIN_FREE); })
+      : initPlaced.slice();
+    var placedBounds = placed.map(getBounds);
+    var placedEdgeStr = initEdgeStr.slice();
+
+    for (var rfF = 0; rfF < bestStructF.results.length; rfF++) {
+      var rrF = bestStructF.results[rfF];
+      var rPtsF = MARGIN_FREE > 0 ? translate(rrF.points, -MARGIN_FREE, -MARGIN_FREE) : rrF.points;
+      placed.push(rPtsF);
+      placedBounds.push(getBounds(rPtsF));
+      var rPolyF = idPolyF[rrF.id];
+      placedEdgeStr.push(rPolyF ? rPolyF.edgeStr : []);
+    }
+
+    var results = bestStructF.results.slice();
+    var unplaced = [];
+
+    // Collect unplaced shapes preserving sorted order
+    var unplacedSetF = {};
+    for (var uiF = 0; uiF < bestStructF.unplaced.length; uiF++) unplacedSetF[bestStructF.unplaced[uiF]] = true;
+    var unplacedShapesF = [];
+    for (var siF0 = 0; siF0 < sorted.length; siF0++) {
+      if (unplacedSetF[sorted[siF0].id]) unplacedShapesF.push(sorted[siF0]);
+    }
+
+    if (bestStructF.results.length > 0) {
+      self.postMessage({ type: 'progress', placed: results, current: bestStructF.results.length, total: sorted.length });
+    }
+
+    // Fill remaining space with free rotation
+    for (var siF = 0; siF < unplacedShapesF.length; siF++) {
+      var poly = unplacedShapesF[siF];
       var myEdgeStr = poly.edgeStr;
       var srcStart = Math.max(0, placed.length - MAX_SRC);
 
-      var coarse = tryRotations(poly.points, myEdgeStr, COARSE_ROTS, placed, placedBounds, placedEdgeStr, srcStart, sw, sh, spacing, boundary);
+      var coarse = tryRotations(poly.points, myEdgeStr, COARSE_ROTS, placed, placedBounds, placedEdgeStr, srcStart, esw_free, esh_free, spacing, boundary);
       var best = coarse;
       if (coarse !== null) {
         var center = coarse.rot;
@@ -929,7 +1040,7 @@ function nest(polygons, sheetConfig) {
           if (da === 0) continue;
           fineRots.push(((center + da) % 360 + 360) % 360);
         }
-        var fine = tryRotations(poly.points, myEdgeStr, fineRots, placed, placedBounds, placedEdgeStr, srcStart, sw, sh, spacing, boundary);
+        var fine = tryRotations(poly.points, myEdgeStr, fineRots, placed, placedBounds, placedEdgeStr, srcStart, esw_free, esh_free, spacing, boundary);
         if (fine && fine.score < coarse.score) best = fine;
       }
 
@@ -944,13 +1055,15 @@ function nest(polygons, sheetConfig) {
           var bestB = getBounds(best.pts);
           bestHoles = transformHoles(poly.holes, best.rot, -outerB.minX, -outerB.minY, bestB.minX, bestB.minY);
         }
-        results.push({ id: poly.id, label: poly.label, points: best.pts, holes: bestHoles, rotation: best.rot, color: poly.color });
+        var finalPtsFree = MARGIN_FREE > 0 ? translate(best.pts, MARGIN_FREE, MARGIN_FREE) : best.pts;
+        var finalHolesFree = (MARGIN_FREE > 0 && bestHoles) ? bestHoles.map(function(h) { return translate(h, MARGIN_FREE, MARGIN_FREE); }) : bestHoles;
+        results.push({ id: poly.id, label: poly.label, points: finalPtsFree, holes: finalHolesFree, rotation: best.rot, color: poly.color });
       } else {
         unplaced.push(poly.id);
       }
 
-      if ((si + 1) % 3 === 0 || si === sorted.length - 1) {
-        self.postMessage({ type: 'progress', placed: results, current: si + 1, total: sorted.length });
+      if ((siF + 1) % 3 === 0 || siF === unplacedShapesF.length - 1) {
+        self.postMessage({ type: 'progress', placed: results, current: bestStructF.results.length + siF + 1, total: sorted.length });
       }
     }
 

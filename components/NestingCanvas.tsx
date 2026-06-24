@@ -1,6 +1,7 @@
 'use client'
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import type { NestResult, SheetConfig, PlacedPart, Point } from '@/types/nesting'
+import type { TFunc } from '@/lib/i18n'
 
 interface Props {
   result: NestResult | null
@@ -13,6 +14,7 @@ interface Props {
   onEditModeChange: (v: boolean) => void
   editablePlaced: PlacedPart[]
   onPlacedChange: (placed: PlacedPart[]) => void
+  t: TFunc
 }
 
 const PALETTE = ['#4f8ef7', '#4fcf8e', '#f7c34f', '#f77f4f', '#cf4ff7', '#4ff7e8']
@@ -188,7 +190,7 @@ function drawDim(
 
 export default function NestingCanvas({
   result, sheetConfig, isRunning, progress, boundary, obstacles,
-  editMode, onEditModeChange, editablePlaced, onPlacedChange,
+  editMode, onEditModeChange, editablePlaced, onPlacedChange, t,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [viewScale, setViewScale] = useState(1)
@@ -236,8 +238,8 @@ export default function NestingCanvas({
   // Hide export warning after 2s
   useEffect(() => {
     if (!exportBlocked) return
-    const t = setTimeout(() => setExportBlocked(false), 2000)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => setExportBlocked(false), 2000)
+    return () => clearTimeout(timer)
   }, [exportBlocked])
 
   const labelColors = useMemo(() => {
@@ -419,19 +421,27 @@ export default function NestingCanvas({
       ctx.strokeRect(0, 0, W, H)
     }
 
-    // Sheet dimension labels
-    const dimFs = Math.max(6, Math.min(11, 9 / s))
-    ctx.fillStyle = '#94a3b8'
-    ctx.font = `${dimFs}px Inter, sans-serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'top'
-    ctx.fillText(`${W} mm`, W / 2, H + 6 / s)
-    ctx.save()
-    ctx.translate(-6 / s, H / 2)
-    ctx.rotate(-Math.PI / 2)
-    ctx.textBaseline = 'bottom'
-    ctx.fillText(`${H} mm`, 0, 0)
-    ctx.restore()
+    // Sheet dimension lines (offset 56 — further out than layout dims)
+    drawDim(ctx, 0, 0, W, 0, `${W} mm`, s, -28)
+    drawDim(ctx, 0, 0, 0, H, `${H} mm`, s, 28)
+
+    // Total layout dimensions (bounding box of all placed parts)
+    const partsForDim = editablePlaced.length > 0 ? editablePlaced : (result?.placed ?? [])
+    if (partsForDim.length > 0) {
+      let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity
+      for (const part of partsForDim) {
+        for (const p of part.points) {
+          if (p.x < lMinX) lMinX = p.x
+          if (p.y < lMinY) lMinY = p.y
+          if (p.x > lMaxX) lMaxX = p.x
+          if (p.y > lMaxY) lMaxY = p.y
+        }
+      }
+      const lW = +(lMaxX - lMinX).toFixed(1)
+      const lH = +(lMaxY - lMinY).toFixed(1)
+      drawDim(ctx, lMinX, lMaxY, lMaxX, lMaxY, `${lW} mm`, s, 28)
+      drawDim(ctx, lMaxX, lMinY, lMaxX, lMaxY, `${lH} mm`, s, -28)
+    }
 
     // ── Parts ──
     const partsToRender = editablePlaced.length > 0 ? editablePlaced : (result?.placed ?? [])
@@ -462,20 +472,6 @@ export default function NestingCanvas({
       ctx.stroke()
     }
 
-    // Label pass
-    for (const part of partsToRender) {
-      if (part.points.length < 2) continue
-      const color = labelColors.get(part.label) ?? '#4f8ef7'
-      const pts = (editMode && tempPart?.id === part.id) ? tempPart.points : part.points
-      const cx = pts.reduce((sum, p) => sum + p.x, 0) / pts.length
-      const cy = pts.reduce((sum, p) => sum + p.y, 0) / pts.length
-      const fs = Math.max(4, Math.min(10, 8 / s))
-      ctx.font = `600 ${fs}px Inter, sans-serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillStyle = color
-      ctx.fillText(part.label, cx, cy)
-    }
 
     // ── Waste areas (only when not in edit mode) ──
     if (!editMode && partsToRender.length > 0 && !isRunning) {
@@ -522,8 +518,8 @@ export default function NestingCanvas({
       ctx.closePath(); ctx.stroke()
       ctx.setLineDash([])
       ctx.restore()
-      drawDim(ctx, b.minX, b.minY, b.maxX, b.minY, `${pw.toFixed(1)} mm`, s, -18)
-      drawDim(ctx, b.maxX, b.minY, b.maxX, b.maxY, `${ph.toFixed(1)} mm`, s, 18)
+      drawDim(ctx, b.minX, b.minY, b.maxX, b.minY, `${pw.toFixed(1)} mm`, s, -28)
+      drawDim(ctx, b.maxX, b.minY, b.maxX, b.maxY, `${ph.toFixed(1)} mm`, s, 28)
       ctx.globalAlpha = 0.7
       if (b.minX > 1) drawDim(ctx, 0, midY, b.minX, midY, `${b.minX.toFixed(1)} mm`, s, 0)
       if (W - b.maxX > 1) drawDim(ctx, b.maxX, midY, W, midY, `${(W - b.maxX).toFixed(1)} mm`, s, 0)
@@ -850,43 +846,151 @@ export default function NestingCanvas({
 
   function exportSVG() {
     if (!result) return
+    const W = sheetConfig.width, H = sheetConfig.height
+    const pad = 20
     const lines = [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetConfig.width}" height="${sheetConfig.height}">`,
-      `<rect width="${sheetConfig.width}" height="${sheetConfig.height}" fill="#fff"/>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W + pad * 2}" height="${H + pad * 2}" viewBox="${-pad} ${-pad} ${W + pad * 2} ${H + pad * 2}">`,
+      `<rect width="${W}" height="${H}" fill="#fff"/>`,
     ]
+
+    // Sheet border
+    if (boundary && boundary.length >= 3) {
+      const bd = boundary.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
+      lines.push(`<path d="${bd}" fill="none" stroke="#333" stroke-width="1"/>`)
+    } else {
+      lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#333" stroke-width="1"/>`)
+    }
+
+    // Parts with holes (evenodd fill rule cuts out holes)
     for (const part of result.placed) {
       const color = labelColors.get(part.label) ?? '#4f8ef7'
-      const d = part.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-      lines.push(`<path d="${d}" fill="${color}30" stroke="${color}" stroke-width="0.8"/>`)
+      let d = part.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
+      if (part.holes) {
+        for (const hole of part.holes) {
+          d += ' ' + hole.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
+        }
+      }
+      lines.push(`<path fill-rule="evenodd" d="${d}" fill="${color}30" stroke="${color}" stroke-width="0.8"/>`)
     }
+
+    // Width dimension line (below sheet) — dashed, text centered on line
+    lines.push(`<line x1="0" y1="${H + 8}" x2="${W}" y2="${H + 8}" stroke="#888" stroke-width="0.6" stroke-dasharray="3,2"/>`)
+    lines.push(`<line x1="0" y1="${H}" x2="0" y2="${H + 11}" stroke="#888" stroke-width="0.6"/>`)
+    lines.push(`<line x1="${W}" y1="${H}" x2="${W}" y2="${H + 11}" stroke="#888" stroke-width="0.6"/>`)
+    lines.push(`<text x="${W / 2}" y="${H + 8}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="8" fill="#888" stroke="white" stroke-width="2.5" paint-order="stroke" stroke-linejoin="round">${W} mm</text>`)
+    // Height dimension line (left of sheet) — dashed, text centered on line
+    lines.push(`<line x1="-8" y1="0" x2="-8" y2="${H}" stroke="#888" stroke-width="0.6" stroke-dasharray="3,2"/>`)
+    lines.push(`<line x1="-11" y1="0" x2="0" y2="0" stroke="#888" stroke-width="0.6"/>`)
+    lines.push(`<line x1="-11" y1="${H}" x2="0" y2="${H}" stroke="#888" stroke-width="0.6"/>`)
+    lines.push(`<text x="${-8}" y="${H / 2}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="8" fill="#888" stroke="white" stroke-width="2.5" paint-order="stroke" stroke-linejoin="round" transform="rotate(-90 ${-8} ${H / 2})">${H} mm</text>`)
+
     lines.push('</svg>')
     download(new Blob([lines.join('\n')], { type: 'image/svg+xml' }), 'nesting-layout.svg')
   }
 
   function exportDXF() {
     if (!result) return
+    const W = sheetConfig.width, H = sheetConfig.height
     const L: string[] = []
     const add = (...a: (string | number)[]) => a.forEach(v => L.push(String(v)))
-    add('0','SECTION','2','HEADER','9','$ACADVER','1','AC1009','0','ENDSEC','0','SECTION','2','ENTITIES')
+    // DXF uses Y-up; SVG uses Y-down → flip: y_dxf = H - y_svg
+    const fx = (x: number) => x.toFixed(4)
+    const fy = (y: number) => (H - y).toFixed(4)
+    const addLine = (layer: string, x1: number, y1: number, x2: number, y2: number, ltype?: string) => {
+      if (ltype) add('0','LINE','8',layer,'6',ltype,'10',fx(x1),'20',fy(y1),'30','0.0000','11',fx(x2),'21',fy(y2),'31','0.0000')
+      else        add('0','LINE','8',layer,        '10',fx(x1),'20',fy(y1),'30','0.0000','11',fx(x2),'21',fy(y2),'31','0.0000')
+    }
+
+    // HEADER
+    add('0','SECTION','2','HEADER','9','$ACADVER','1','AC1009','0','ENDSEC')
+    // TABLES — define DASHED linetype
+    add('0','SECTION','2','TABLES',
+      '0','TABLE','2','LTYPE','70','2',
+      '0','LTYPE','2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
+      '0','LTYPE','2','DASHED','70','0','3','__ __ __ __ __','72','65','73','2','40','0.75','49','0.5','49','-0.25',
+      '0','ENDTAB','0','ENDSEC')
+    add('0','SECTION','2','ENTITIES')
+
+    // Sheet border (layer BORDER)
+    const borderPts = boundary && boundary.length >= 3
+      ? boundary
+      : [{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}]
+    for (let i = 0; i < borderPts.length; i++) {
+      const p1 = borderPts[i], p2 = borderPts[(i + 1) % borderPts.length]
+      addLine('BORDER', p1.x, p1.y, p2.x, p2.y)
+    }
+
+    // Parts: outer boundary + holes on same layer 0
     for (const part of result.placed) {
       const pts = part.points
       for (let i = 0; i < pts.length; i++) {
         const p1 = pts[i], p2 = pts[(i + 1) % pts.length]
-        add('0','LINE','8','0','10',p1.x.toFixed(4),'20',p1.y.toFixed(4),'30','0.0000','11',p2.x.toFixed(4),'21',p2.y.toFixed(4),'31','0.0000')
+        addLine('0', p1.x, p1.y, p2.x, p2.y)
+      }
+      if (part.holes) {
+        for (const hole of part.holes) {
+          for (let i = 0; i < hole.length; i++) {
+            const p1 = hole[i], p2 = hole[(i + 1) % hole.length]
+            addLine('0', p1.x, p1.y, p2.x, p2.y)
+          }
+        }
       }
     }
+
+    // Dimension lines (layer DIM, main lines DASHED, ticks CONTINUOUS)
+    // Width dim: below sheet in SVG = below origin in DXF (y < 0)
+    addLine('DIM',  0,  H+8, W, H+8, 'DASHED')   // main line
+    addLine('DIM',  0,  H,   0, H+11)             // left tick
+    addLine('DIM',  W,  H,   W, H+11)             // right tick
+    // text: 72=4 (MIDDLE = center H+V), group order: 10,20,30 → 40 → 1 → 72 → 11,21,31
+    add('0','TEXT','8','DIM','10',fx(W/2),'20',fy(H+8),'30','0.0000','40','5','1',`${W} mm`,'72','4','11',fx(W/2),'21',fy(H+8),'31','0.0000')
+    // Height dim: left of sheet (x < 0)
+    addLine('DIM', -8,  0,  -8,  H, 'DASHED')    // main line
+    addLine('DIM', -11, 0,   0,  0)              // bottom tick
+    addLine('DIM', -11, H,   0,  H)              // top tick
+    // text rotated 90°, 72=4 (MIDDLE)
+    add('0','TEXT','8','DIM','10',fx(-8),'20',fy(H/2),'30','0.0000','40','5','50','90','1',`${H} mm`,'72','4','11',fx(-8),'21',fy(H/2),'31','0.0000')
+
     add('0','ENDSEC','0','EOF')
     download(new Blob([L.join('\r\n')], { type: 'application/octet-stream' }), 'nesting-layout.dxf')
   }
 
   function exportIGES() {
     if (!result) return
+    const W = sheetConfig.width, H = sheetConfig.height
+    // IGES uses Y-up; SVG uses Y-down → flip: y_iges = H - y_svg
+    const flipY = (y: number) => H - y
     const f8 = (v: string | number) => String(v).padStart(8, ' ')
     const row = (d: string, s: string, n: number) => (d + ' '.repeat(72)).slice(0, 72) + s + String(n).padStart(7, ' ')
     const segPairs: [Point, Point][] = []
-    for (const p of result.placed)
-      for (let i = 0; i < p.points.length; i++)
-        segPairs.push([p.points[i], p.points[(i + 1) % p.points.length]])
+    const addSeg = (ax: number, ay: number, bx: number, by: number) =>
+      segPairs.push([{x: ax, y: flipY(ay)}, {x: bx, y: flipY(by)}])
+
+    // Sheet border
+    const borderPts = boundary && boundary.length >= 3
+      ? boundary
+      : [{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}]
+    for (let i = 0; i < borderPts.length; i++) {
+      const p1 = borderPts[i], p2 = borderPts[(i + 1) % borderPts.length]
+      addSeg(p1.x, p1.y, p2.x, p2.y)
+    }
+
+    // Parts: outer boundary + holes
+    for (const p of result.placed) {
+      for (let i = 0; i < p.points.length; i++) {
+        const a = p.points[i], b = p.points[(i + 1) % p.points.length]
+        addSeg(a.x, a.y, b.x, b.y)
+      }
+      if (p.holes) {
+        for (const hole of p.holes) {
+          for (let i = 0; i < hole.length; i++) {
+            const a = hole[i], b = hole[(i + 1) % hole.length]
+            addSeg(a.x, a.y, b.x, b.y)
+          }
+        }
+      }
+    }
+
     const sL = [row('nesting-layout.igs', 'S', 1)]
     const gStr = '1H,,1H;,4Hnest,4Hnest,4HNEST,4HNEST,16,38,6,308,15,4HNEST,1.0,2,2HMM,1,0.001,15H               ,0.001,1.0;'
     const gL: string[] = []
@@ -919,7 +1023,7 @@ export default function NestingCanvas({
       <div className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 border-b border-slate-700 shrink-0">
         <button onClick={fitView}
           className="px-2 py-0.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors">
-          Fit
+          {t('fit')}
         </button>
         <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
         <button onClick={() => zoomBy(1.25)}
@@ -944,7 +1048,7 @@ export default function NestingCanvas({
               setMeasureHits([])
               setHoverPt(null)
             }}
-            title="Measure tool — click two points"
+            title={t('measureTitle')}
             className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs transition-colors ${
               measureMode
                 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
@@ -957,7 +1061,7 @@ export default function NestingCanvas({
               <line x1="8" y1="5" x2="8" y2="11" strokeWidth="1"/>
               <line x1="11" y1="5" x2="11" y2="11" strokeWidth="1"/>
             </svg>
-            Measure
+            {t('measure')}
           </button>
         )}
         {!editMode && measureMode && measurePts.length > 0 && (
@@ -965,7 +1069,7 @@ export default function NestingCanvas({
             onClick={() => { setMeasurePts([]); setMeasureHits([]); setHoverPt(null) }}
             className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
           >
-            Reset
+            {t('reset')}
           </button>
         )}
 
@@ -975,7 +1079,7 @@ export default function NestingCanvas({
             <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
             <button
               onClick={() => onEditModeChange(!editMode)}
-              title={editMode ? 'Lock layout (exit edit mode)' : 'Unlock to edit parts'}
+              title={editMode ? t('lockTitle') : t('unlockTitle')}
               className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs transition-colors ${
                 editMode
                   ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
@@ -995,7 +1099,7 @@ export default function NestingCanvas({
                   <circle cx="8" cy="11" r="1.1" fill="currentColor" stroke="none"/>
                 </svg>
               )}
-              {editMode ? 'Unlock' : 'Lock'}
+              {editMode ? t('unlock') : t('lock')}
             </button>
           </>
         )}
@@ -1005,7 +1109,7 @@ export default function NestingCanvas({
             <div className="relative">
               {exportBlocked && (
                 <div className="absolute bottom-full right-0 mb-1 whitespace-nowrap bg-orange-900/90 border border-orange-700 text-orange-300 text-[11px] px-2.5 py-1.5 rounded-lg shadow-xl z-30">
-                  Lock layout first to export
+                  {t('lockToExport')}
                 </div>
               )}
               {showExport && !editMode && (
@@ -1027,7 +1131,7 @@ export default function NestingCanvas({
                     : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 }`}
               >
-                Export ▾
+                {t('exportFile')} ▾
               </button>
             </div>
           )}
@@ -1044,7 +1148,7 @@ export default function NestingCanvas({
               <div className="flex items-center gap-2.5">
                 <div className="w-3.5 h-3.5 rounded-full border-2 border-slate-600 border-t-blue-400 animate-spin shrink-0" />
                 <span className="text-slate-300 text-sm font-medium">
-                  {progress ? `Placing ${progress.current} / ${progress.total} parts` : 'Computing...'}
+                  {progress ? t('placingParts', { current: progress.current, total: progress.total }) : t('computing')}
                 </span>
               </div>
               {progress && (
@@ -1061,7 +1165,7 @@ export default function NestingCanvas({
         {editMode && !isRunning && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
             <div className="bg-blue-500/15 border border-blue-500/25 text-blue-400 text-[11px] px-3 py-1 rounded-full">
-              Edit mode — click to select, drag to move, drag handle to rotate
+              {t('editModeHint')}
             </div>
           </div>
         )}
@@ -1070,7 +1174,7 @@ export default function NestingCanvas({
         {!editMode && measureMode && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
             <div className="bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] px-3 py-1 rounded-full">
-              {measurePts.length === 0 ? 'Click a part or point' : measurePts.length === 1 ? 'Click another part or point' : 'Click to start new measurement'}
+              {measurePts.length === 0 ? t('measureHint0') : measurePts.length === 1 ? t('measureHint1') : t('measureHint2')}
             </div>
           </div>
         )}
@@ -1081,29 +1185,29 @@ export default function NestingCanvas({
             {selInfo && (
               <>
                 <div className="text-slate-200 font-semibold mb-2">{selInfo.label}</div>
-                <div className="text-slate-500 mb-1">Part size</div>
-                <div className="flex justify-between text-slate-300 mb-0.5"><span>Width</span><span className="font-mono">{selInfo.w} mm</span></div>
-                <div className="flex justify-between text-slate-300 mb-2"><span>Height</span><span className="font-mono">{selInfo.h} mm</span></div>
-                <div className="text-slate-500 mb-1">Distance to sheet edge</div>
+                <div className="text-slate-500 mb-1">{t('partSize')}</div>
+                <div className="flex justify-between text-slate-300 mb-0.5"><span>W</span><span className="font-mono">{selInfo.w} mm</span></div>
+                <div className="flex justify-between text-slate-300 mb-2"><span>H</span><span className="font-mono">{selInfo.h} mm</span></div>
+                <div className="text-slate-500 mb-1">{t('distToEdge')}</div>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-slate-300">
-                  <span>Left</span><span className="font-mono text-right">{selInfo.left} mm</span>
-                  <span>Right</span><span className="font-mono text-right">{selInfo.right} mm</span>
-                  <span>Top</span><span className="font-mono text-right">{selInfo.top} mm</span>
-                  <span>Bottom</span><span className="font-mono text-right">{selInfo.bottom} mm</span>
+                  <span>{t('left')}</span><span className="font-mono text-right">{selInfo.left} mm</span>
+                  <span>{t('right')}</span><span className="font-mono text-right">{selInfo.right} mm</span>
+                  <span>{t('top')}</span><span className="font-mono text-right">{selInfo.top} mm</span>
+                  <span>{t('bottom')}</span><span className="font-mono text-right">{selInfo.bottom} mm</span>
                 </div>
-                <button onClick={() => setSelectedPart(null)} className="mt-2 text-[10px] text-slate-600 hover:text-slate-400 transition-colors">× dismiss</button>
+                <button onClick={() => setSelectedPart(null)} className="mt-2 text-[10px] text-slate-600 hover:text-slate-400 transition-colors">{t('dismiss')}</button>
               </>
             )}
             {partGap && (
               <>
-                <div className="text-slate-500 mb-1">Gap between parts</div>
+                <div className="text-slate-500 mb-1">{t('gapBetweenParts')}</div>
                 <div className="text-amber-400 font-mono font-bold text-base mb-1.5">{partGap.gap} mm</div>
                 <div className="text-slate-500">{partGap.label1} → {partGap.label2}</div>
               </>
             )}
             {!partGap && measureDist !== null && (
               <>
-                <div className="text-slate-500 mb-1">Distance</div>
+                <div className="text-slate-500 mb-1">{t('distance')}</div>
                 <div className="text-amber-400 font-mono font-bold text-base">{measureDist} mm</div>
                 <div className="text-slate-500 mt-1">ΔX: {Math.abs(measurePts[1].x - measurePts[0].x).toFixed(1)} mm</div>
                 <div className="text-slate-500">ΔY: {Math.abs(measurePts[1].y - measurePts[0].y).toFixed(1)} mm</div>
@@ -1125,11 +1229,7 @@ export default function NestingCanvas({
         />
 
         <div className="absolute bottom-2 left-3 text-[10px] text-slate-600 pointer-events-none select-none">
-          {editMode
-            ? 'Click part to select · Drag to move · Drag ↻ handle to rotate · Cannot drag outside boundary'
-            : measureMode
-              ? 'Click two points to measure · Esc to exit'
-              : 'Scroll to zoom · Drag to pan · Click part to measure · Double-click to fit'}
+          {editMode ? t('editModeBottom') : measureMode ? t('measureBottom') : t('defaultBottom')}
         </div>
       </div>
 
@@ -1138,15 +1238,15 @@ export default function NestingCanvas({
         {result ? (
           <>
             <span className="text-slate-400">
-              <span className="text-slate-200 font-medium">{result.placed.length}</span> parts placed
+              <span className="text-slate-200 font-medium">{result.placed.length}</span> {t('partsPlaced')}
             </span>
             <span className="text-slate-400">
-              Utilization <span className={`font-semibold ${result.efficiency >= 80 ? 'text-emerald-400' : result.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
+              {t('utilization')} <span className={`font-semibold ${result.efficiency >= 80 ? 'text-emerald-400' : result.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
                 {result.efficiency}%
               </span>
             </span>
             {editMode && (
-              <span className="text-blue-400 font-medium">— Edit mode</span>
+              <span className="text-blue-400 font-medium">{t('editModeLabel')}</span>
             )}
             <div className="ml-auto flex items-center gap-3">
               {Array.from(labelColors.entries()).slice(0, 6).map(([label, color]) => (
@@ -1164,7 +1264,7 @@ export default function NestingCanvas({
             </div>
           </>
         ) : (
-          <span className="text-slate-600">{isRunning ? 'Computing…' : 'Import parts and run nesting'}</span>
+          <span className="text-slate-600">{isRunning ? t('computingStatus') : t('importAndRun')}</span>
         )}
       </div>
     </div>

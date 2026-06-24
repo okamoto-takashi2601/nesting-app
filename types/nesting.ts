@@ -13,6 +13,7 @@ export interface SheetConfig {
   width: number
   height: number
   spacing: number
+  margin: number
   rotationStep: number
   layoutMode: LayoutMode
   boundary?: Point[]
