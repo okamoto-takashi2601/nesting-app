@@ -917,9 +917,9 @@ export default function NestingCanvas({
     // Sheet border
     if (boundary && boundary.length >= 3) {
       const bd = boundary.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-      lines.push(`<path d="${bd}" fill="none" stroke="#333" stroke-width="1"/>`)
+      lines.push(`<path d="${bd}" fill="none" stroke="#22c55e" stroke-width="1"/>`)
     } else {
-      lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#333" stroke-width="1"/>`)
+      lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#22c55e" stroke-width="1"/>`)
     }
 
     // Layout bounding box
@@ -936,57 +936,57 @@ export default function NestingCanvas({
     }
 
     const dimText = (x: number, y: number, txt: string, rotate?: string) =>
-      `<text x="${x}" y="${y}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="7" fill="#888" stroke="white" stroke-width="2" paint-order="stroke" stroke-linejoin="round"${rotate ? ` transform="${rotate}"` : ''}>${txt}</text>`
-    const dimLine = (x1: number, y1: number, x2: number, y2: number, dashed?: boolean) =>
-      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#888" stroke-width="0.5"${dashed ? ' stroke-dasharray="3,2"' : ''}/>`
+      `<text x="${x}" y="${y}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="7" fill="#eab308" stroke="white" stroke-width="2" paint-order="stroke" stroke-linejoin="round"${rotate ? ` transform="${rotate}"` : ''}>${txt}</text>`
+    const dimLine = (x1: number, y1: number, x2: number, y2: number) =>
+      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#eab308" stroke-width="0.5" stroke-dasharray="3,2"/>`
 
     // === Width dims (below sheet) ===
     // Layout width at y = H+10
     lines.push(dimLine(lMinX, H, lMinX, H + 13))
     lines.push(dimLine(lMaxX, H, lMaxX, H + 13))
-    lines.push(dimLine(lMinX, H + 10, lMaxX, H + 10, true))
+    lines.push(dimLine(lMinX, H + 10, lMaxX, H + 10))
     lines.push(dimText((lMinX + lMaxX) / 2, H + 10, `${lW.toFixed(1)}`))
     // Sheet width at y = H+24
     lines.push(dimLine(0, H, 0, H + 27))
     lines.push(dimLine(W, H, W, H + 27))
-    lines.push(dimLine(0, H + 24, W, H + 24, true))
+    lines.push(dimLine(0, H + 24, W, H + 24))
     lines.push(dimText(W / 2, H + 24, `${W}`))
 
     // === Height dims: Sheet LEFT, Layout RIGHT ===
     // Sheet height at x = -24 (left)
     lines.push(dimLine(0, 0, -27, 0))
     lines.push(dimLine(0, H, -27, H))
-    lines.push(dimLine(-24, 0, -24, H, true))
+    lines.push(dimLine(-24, 0, -24, H))
     lines.push(dimText(-24, H / 2, `${H}`, `rotate(-90 ${-24} ${H / 2})`))
     // Layout height at x = W+10 (right — matches canvas)
     lines.push(dimLine(W, lMinY, W + 13, lMinY))
     lines.push(dimLine(W, lMaxY, W + 13, lMaxY))
-    lines.push(dimLine(W + 10, lMinY, W + 10, lMaxY, true))
+    lines.push(dimLine(W + 10, lMinY, W + 10, lMaxY))
     lines.push(dimText(W + 10, (lMinY + lMaxY) / 2, `${lH.toFixed(1)}`, `rotate(90 ${W + 10} ${(lMinY + lMaxY) / 2})`))
 
     // === Margin dims: RIGHT side (wTop/wBot) and BELOW (wLft/wRgt) — matches canvas ===
     if (mTop > 1) {
       lines.push(dimLine(W, 0, W + 27, 0))
       lines.push(dimLine(W, lMinY, W + 27, lMinY))
-      lines.push(dimLine(W + 24, 0, W + 24, lMinY, true))
+      lines.push(dimLine(W + 24, 0, W + 24, lMinY))
       lines.push(dimText(W + 24, lMinY / 2, `${mTop.toFixed(1)}`, `rotate(90 ${W + 24} ${lMinY / 2})`))
     }
     if (mBot > 1) {
       lines.push(dimLine(W, lMaxY, W + 27, lMaxY))
       lines.push(dimLine(W, H, W + 27, H))
-      lines.push(dimLine(W + 24, lMaxY, W + 24, H, true))
+      lines.push(dimLine(W + 24, lMaxY, W + 24, H))
       lines.push(dimText(W + 24, (lMaxY + H) / 2, `${mBot.toFixed(1)}`, `rotate(90 ${W + 24} ${(lMaxY + H) / 2})`))
     }
     if (mLft > 1) {
       lines.push(dimLine(0, H, 0, H + 41))
       lines.push(dimLine(lMinX, H, lMinX, H + 41))
-      lines.push(dimLine(0, H + 38, lMinX, H + 38, true))
+      lines.push(dimLine(0, H + 38, lMinX, H + 38))
       lines.push(dimText(lMinX / 2, H + 38, `${mLft.toFixed(1)}`))
     }
     if (mRgt > 1) {
       lines.push(dimLine(lMaxX, H, lMaxX, H + 41))
       lines.push(dimLine(W, H, W, H + 41))
-      lines.push(dimLine(lMaxX, H + 38, W, H + 38, true))
+      lines.push(dimLine(lMaxX, H + 38, W, H + 38))
       lines.push(dimText((lMaxX + W) / 2, H + 38, `${mRgt.toFixed(1)}`))
     }
 
@@ -1030,7 +1030,14 @@ export default function NestingCanvas({
       '0','TABLE','2','LTYPE','70','2',
       '0','LTYPE','2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
       '0','LTYPE','2','DASHED','70','0','3','__ __ __ __ __','72','65','73','2','40','0.75','49','0.5','49','-0.25',
-      '0','ENDTAB','0','ENDSEC')
+      '0','ENDTAB',
+      '0','TABLE','2','LAYER','70','4',
+      '0','LAYER','2','0','70','0','62','7','6','CONTINUOUS',
+      '0','LAYER','2','BORDER','70','0','62','3','6','CONTINUOUS',
+      '0','LAYER','2','LAYOUT','70','0','62','8','6','DASHED',
+      '0','LAYER','2','DIM','70','0','62','2','6','DASHED',
+      '0','ENDTAB',
+      '0','ENDSEC')
     add('0','SECTION','2','ENTITIES')
 
     // Sheet border
@@ -1117,9 +1124,9 @@ export default function NestingCanvas({
     const flipY = (y: number) => H - y
     const f8 = (v: string | number) => String(v).padStart(8, ' ')
     const row = (d: string, s: string, n: number) => (d + ' '.repeat(72)).slice(0, 72) + s + String(n).padStart(7, ' ')
-    const segPairs: [Point, Point][] = []
-    const addSeg = (ax: number, ay: number, bx: number, by: number) =>
-      segPairs.push([{x: ax, y: flipY(ay)}, {x: bx, y: flipY(by)}])
+    const segPairs: Array<{a: Point; b: Point; color: number}> = []
+    const addSeg = (ax: number, ay: number, bx: number, by: number, color = 0) =>
+      segPairs.push({a: {x: ax, y: flipY(ay)}, b: {x: bx, y: flipY(by)}, color})
 
     // Layout bounding box
     let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity
@@ -1132,13 +1139,13 @@ export default function NestingCanvas({
     for (const p of result.placed) cnt.set(p.label, (cnt.get(p.label) ?? 0) + 1)
     const baseName = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'nesting'
 
-    // Sheet border
+    // Sheet border (color 3 = green)
     const borderPts = boundary && boundary.length >= 3
       ? boundary
       : [{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}]
     for (let i = 0; i < borderPts.length; i++) {
       const p1 = borderPts[i], p2 = borderPts[(i + 1) % borderPts.length]
-      addSeg(p1.x, p1.y, p2.x, p2.y)
+      addSeg(p1.x, p1.y, p2.x, p2.y, 3)
     }
 
     // Layout bbox
@@ -1161,21 +1168,16 @@ export default function NestingCanvas({
           }
     }
 
-    // Dimension lines (as line segments)
+    // Dimension lines (color 5 = yellow)
     const midLX = (lMinX+lMaxX)/2, midLY = (lMinY+lMaxY)/2
-    // Width layout dim
-    addSeg(lMinX, H+10, lMaxX, H+10)
-    // Width sheet dim
-    addSeg(0, H+24, W, H+24)
-    // Height layout dim
-    addSeg(-10, lMinY, -10, lMaxY)
-    // Height sheet dim
-    addSeg(-24, 0, -24, H)
-    // Margin dims
-    addSeg(midLX, 0, midLX, lMinY)
-    addSeg(midLX, lMaxY, midLX, H)
-    addSeg(0, midLY, lMinX, midLY)
-    addSeg(lMaxX, midLY, W, midLY)
+    addSeg(lMinX, H+10, lMaxX, H+10, 5)
+    addSeg(0, H+24, W, H+24, 5)
+    addSeg(-10, lMinY, -10, lMaxY, 5)
+    addSeg(-24, 0, -24, H, 5)
+    addSeg(midLX, 0, midLX, lMinY, 5)
+    addSeg(midLX, lMaxY, midLX, H, 5)
+    addSeg(0, midLY, lMinX, midLY, 5)
+    addSeg(lMaxX, midLY, W, midLY, 5)
 
     const fileName = `${baseName}_layout.igs`
     const sL = [row(fileName, 'S', 1)]
@@ -1184,11 +1186,11 @@ export default function NestingCanvas({
     for (let p = 0, gi = 1; p < gStr.length; p += 72, gi++) gL.push(row(gStr.slice(p, p + 72), 'G', gi))
     const dL: string[] = [], pL: string[] = []
     let dS = 1, pS = 1
-    for (const [a, b] of segPairs) {
+    for (const {a, b, color} of segPairs) {
       const pd = `110,${a.x.toFixed(3)},${a.y.toFixed(3)},0.0,${b.x.toFixed(3)},${b.y.toFixed(3)},0.0;`
       pL.push((pd + ' '.repeat(64)).slice(0, 64) + f8(dS) + 'P' + String(pS).padStart(7, ' '))
       dL.push(f8(110)+f8(pS)+f8(0)+f8(0)+f8(0)+f8(0)+f8(0)+f8(0)+'00000000'+'D'+String(dS).padStart(7,' '))
-      dL.push(f8(110)+f8(0)+f8(0)+f8(1)+f8(0)+f8(0)+f8(0)+'        '+f8(0)+'D'+String(dS+1).padStart(7,' '))
+      dL.push(f8(110)+f8(0)+f8(color)+f8(1)+f8(0)+f8(0)+f8(0)+'        '+f8(0)+'D'+String(dS+1).padStart(7,' '))
       dS += 2; pS++
     }
     const tL = row('S'+String(sL.length).padStart(7)+'G'+String(gL.length).padStart(7)+'D'+String(dL.length).padStart(7)+'P'+String(pL.length).padStart(7),'T',1)
