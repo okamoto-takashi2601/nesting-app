@@ -479,6 +479,15 @@ export default function NestingCanvas({
       }
       const lW = +(lMaxX - lMinX).toFixed(1)
       const lH = +(lMaxY - lMinY).toFixed(1)
+
+      ctx.save()
+      ctx.strokeStyle = '#f472b6'
+      ctx.lineWidth = 0.8 / s
+      ctx.setLineDash([6 / s, 2 / s, 1 / s, 2 / s])
+      ctx.strokeRect(lMinX, lMinY, lMaxX - lMinX, lMaxY - lMinY)
+      ctx.setLineDash([])
+      ctx.restore()
+
       drawDim(ctx, lMinX, H, lMaxX, H, `${lW} mm`, s, 28)
       drawDim(ctx, W, lMinY, W, lMaxY, `${lH} mm`, s, -28)
     }
@@ -939,7 +948,7 @@ export default function NestingCanvas({
     }
 
     // Layout bounding box
-    lines.push(`<rect x="${lMinX.toFixed(2)}" y="${lMinY.toFixed(2)}" width="${lW.toFixed(2)}" height="${lH.toFixed(2)}" fill="none" stroke="#aaa" stroke-width="0.5" stroke-dasharray="2,2"/>`)
+    lines.push(`<rect x="${lMinX.toFixed(2)}" y="${lMinY.toFixed(2)}" width="${lW.toFixed(2)}" height="${lH.toFixed(2)}" fill="none" stroke="#f472b6" stroke-width="0.8" stroke-dasharray="6,2,1,2"/>`)
 
     // Parts with holes
     for (const part of result.placed) {
@@ -1043,14 +1052,15 @@ export default function NestingCanvas({
 
     add('0','SECTION','2','HEADER','9','$ACADVER','1','AC1009','0','ENDSEC')
     add('0','SECTION','2','TABLES',
-      '0','TABLE','2','LTYPE','70','2',
+      '0','TABLE','2','LTYPE','70','3',
       '0','LTYPE','2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
       '0','LTYPE','2','DASHED','70','0','3','__ __ __ __ __','72','65','73','2','40','0.75','49','0.5','49','-0.25',
+      '0','LTYPE','2','DASHDOT','70','0','3','_._._._._._._','72','65','73','4','40','1.4','49','1.0','49','-0.25','49','0.0','49','-0.25',
       '0','ENDTAB',
       '0','TABLE','2','LAYER','70','4',
       '0','LAYER','2','0','70','0','62','7','6','CONTINUOUS',
       '0','LAYER','2','BORDER','70','0','62','3','6','CONTINUOUS',
-      '0','LAYER','2','LAYOUT','70','0','62','8','6','DASHED',
+      '0','LAYER','2','LAYOUT','70','0','62','211','6','DASHDOT',
       '0','LAYER','2','DIM','70','0','62','2','6','DASHED',
       '0','ENDTAB',
       '0','ENDSEC')
@@ -1066,10 +1076,10 @@ export default function NestingCanvas({
     }
 
     // Layout bounding box
-    addLine('LAYOUT', lMinX, lMinY, lMaxX, lMinY, 'DASHED')
-    addLine('LAYOUT', lMaxX, lMinY, lMaxX, lMaxY, 'DASHED')
-    addLine('LAYOUT', lMaxX, lMaxY, lMinX, lMaxY, 'DASHED')
-    addLine('LAYOUT', lMinX, lMaxY, lMinX, lMinY, 'DASHED')
+    addLine('LAYOUT', lMinX, lMinY, lMaxX, lMinY, 'DASHDOT')
+    addLine('LAYOUT', lMaxX, lMinY, lMaxX, lMaxY, 'DASHDOT')
+    addLine('LAYOUT', lMaxX, lMaxY, lMinX, lMaxY, 'DASHDOT')
+    addLine('LAYOUT', lMinX, lMaxY, lMinX, lMinY, 'DASHDOT')
 
     // Parts: outer boundary + holes on same layer 0
     for (const part of result.placed) {
