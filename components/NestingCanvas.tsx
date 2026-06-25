@@ -235,6 +235,22 @@ export default function NestingCanvas({
     }
   }, [editMode])
 
+  // Keyboard delete in edit mode
+  useEffect(() => {
+    if (!editMode) return
+    function handleKey(e: KeyboardEvent) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEditId && editInteract.type === 'idle') {
+        const sel = editablePlaced.find(p => p.id === selectedEditId)
+        if (sel && !sel.locked) {
+          onPlacedChange(editablePlaced.filter(p => p.id !== selectedEditId))
+          setSelectedEditId(null)
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [editMode, selectedEditId, editInteract, editablePlaced, onPlacedChange])
+
   // Hide export warning after 2s
   useEffect(() => {
     if (!exportBlocked) return
@@ -964,30 +980,30 @@ export default function NestingCanvas({
     lines.push(dimLine(W + 10, lMinY, W + 10, lMaxY))
     lines.push(dimText(W + 10, (lMinY + lMaxY) / 2, `${lH.toFixed(1)}`, `rotate(90 ${W + 10} ${(lMinY + lMaxY) / 2})`))
 
-    // === Margin dims: RIGHT side (wTop/wBot) and BELOW (wLft/wRgt) — matches canvas ===
+    // === Margin dims: same rail as layout dims (W+10 right, H+10 below) ===
     if (mTop > 1) {
-      lines.push(dimLine(W, 0, W + 27, 0))
-      lines.push(dimLine(W, lMinY, W + 27, lMinY))
-      lines.push(dimLine(W + 24, 0, W + 24, lMinY))
-      lines.push(dimText(W + 24, lMinY / 2, `${mTop.toFixed(1)}`, `rotate(90 ${W + 24} ${lMinY / 2})`))
+      lines.push(dimLine(W, 0, W + 13, 0))
+      lines.push(dimLine(W, lMinY, W + 13, lMinY))
+      lines.push(dimLine(W + 10, 0, W + 10, lMinY))
+      lines.push(dimText(W + 10, lMinY / 2, `${mTop.toFixed(1)}`, `rotate(90 ${W + 10} ${lMinY / 2})`))
     }
     if (mBot > 1) {
-      lines.push(dimLine(W, lMaxY, W + 27, lMaxY))
-      lines.push(dimLine(W, H, W + 27, H))
-      lines.push(dimLine(W + 24, lMaxY, W + 24, H))
-      lines.push(dimText(W + 24, (lMaxY + H) / 2, `${mBot.toFixed(1)}`, `rotate(90 ${W + 24} ${(lMaxY + H) / 2})`))
+      lines.push(dimLine(W, lMaxY, W + 13, lMaxY))
+      lines.push(dimLine(W, H, W + 13, H))
+      lines.push(dimLine(W + 10, lMaxY, W + 10, H))
+      lines.push(dimText(W + 10, (lMaxY + H) / 2, `${mBot.toFixed(1)}`, `rotate(90 ${W + 10} ${(lMaxY + H) / 2})`))
     }
     if (mLft > 1) {
-      lines.push(dimLine(0, H, 0, H + 41))
-      lines.push(dimLine(lMinX, H, lMinX, H + 41))
-      lines.push(dimLine(0, H + 38, lMinX, H + 38))
-      lines.push(dimText(lMinX / 2, H + 38, `${mLft.toFixed(1)}`))
+      lines.push(dimLine(0, H, 0, H + 13))
+      lines.push(dimLine(lMinX, H, lMinX, H + 13))
+      lines.push(dimLine(0, H + 10, lMinX, H + 10))
+      lines.push(dimText(lMinX / 2, H + 10, `${mLft.toFixed(1)}`))
     }
     if (mRgt > 1) {
-      lines.push(dimLine(lMaxX, H, lMaxX, H + 41))
-      lines.push(dimLine(W, H, W, H + 41))
-      lines.push(dimLine(lMaxX, H + 38, W, H + 38))
-      lines.push(dimText((lMaxX + W) / 2, H + 38, `${mRgt.toFixed(1)}`))
+      lines.push(dimLine(lMaxX, H, lMaxX, H + 13))
+      lines.push(dimLine(W, H, W, H + 13))
+      lines.push(dimLine(lMaxX, H + 10, W, H + 10))
+      lines.push(dimText((lMaxX + W) / 2, H + 10, `${mRgt.toFixed(1)}`))
     }
 
     lines.push('</svg>')
@@ -1088,30 +1104,30 @@ export default function NestingCanvas({
     addLine('DIM', W+10, lMinY, W+10, lMaxY, 'DASHED')
     addText('DIM', W+10, (lMinY+lMaxY)/2, `${lH.toFixed(1)}`, 90)
 
-    // Margin dims: RIGHT side (wTop/wBot) and BELOW (wLft/wRgt) — matches canvas
+    // Margin dims: same rail as layout dims (W+10 right, H+10 below)
     if (mTop > 1) {
-      addLine('DIM', W, 0, W+27, 0)
-      addLine('DIM', W, lMinY, W+27, lMinY)
-      addLine('DIM', W+24, 0, W+24, lMinY, 'DASHED')
-      addText('DIM', W+24, lMinY/2, `${mTop.toFixed(1)}`, 90)
+      addLine('DIM', W, 0, W+13, 0)
+      addLine('DIM', W, lMinY, W+13, lMinY)
+      addLine('DIM', W+10, 0, W+10, lMinY, 'DASHED')
+      addText('DIM', W+10, lMinY/2, `${mTop.toFixed(1)}`, 90)
     }
     if (mBot > 1) {
-      addLine('DIM', W, lMaxY, W+27, lMaxY)
-      addLine('DIM', W, H, W+27, H)
-      addLine('DIM', W+24, lMaxY, W+24, H, 'DASHED')
-      addText('DIM', W+24, (lMaxY+H)/2, `${mBot.toFixed(1)}`, 90)
+      addLine('DIM', W, lMaxY, W+13, lMaxY)
+      addLine('DIM', W, H, W+13, H)
+      addLine('DIM', W+10, lMaxY, W+10, H, 'DASHED')
+      addText('DIM', W+10, (lMaxY+H)/2, `${mBot.toFixed(1)}`, 90)
     }
     if (mLft > 1) {
-      addLine('DIM', 0, H, 0, H+41)
-      addLine('DIM', lMinX, H, lMinX, H+41)
-      addLine('DIM', 0, H+38, lMinX, H+38, 'DASHED')
-      addText('DIM', lMinX/2, H+38, `${mLft.toFixed(1)}`)
+      addLine('DIM', 0, H, 0, H+13)
+      addLine('DIM', lMinX, H, lMinX, H+13)
+      addLine('DIM', 0, H+10, lMinX, H+10, 'DASHED')
+      addText('DIM', lMinX/2, H+10, `${mLft.toFixed(1)}`)
     }
     if (mRgt > 1) {
-      addLine('DIM', lMaxX, H, lMaxX, H+41)
-      addLine('DIM', W, H, W, H+41)
-      addLine('DIM', lMaxX, H+38, W, H+38, 'DASHED')
-      addText('DIM', (lMaxX+W)/2, H+38, `${mRgt.toFixed(1)}`)
+      addLine('DIM', lMaxX, H, lMaxX, H+13)
+      addLine('DIM', W, H, W, H+13)
+      addLine('DIM', lMaxX, H+10, W, H+10, 'DASHED')
+      addText('DIM', (lMaxX+W)/2, H+10, `${mRgt.toFixed(1)}`)
     }
 
     add('0','ENDSEC','0','EOF')
@@ -1292,6 +1308,43 @@ export default function NestingCanvas({
             </button>
           </>
         )}
+
+        {/* Per-part actions in edit mode */}
+        {editMode && selectedEditId && (() => {
+          const selPart = editablePlaced.find(p => p.id === selectedEditId)
+          if (!selPart) return null
+          return (
+            <>
+              <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+              <button
+                onClick={() => {
+                  onPlacedChange(editablePlaced.map(p =>
+                    p.id === selectedEditId ? { ...p, locked: !p.locked } : p
+                  ))
+                }}
+                title={selPart.locked ? t('unlockPart') : t('lockPart')}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
+                  selPart.locked
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                {selPart.locked ? '🔓' : '🔒'}
+                {selPart.locked ? t('unlockPart') : t('lockPart')}
+              </button>
+              <button
+                onClick={() => {
+                  onPlacedChange(editablePlaced.filter(p => p.id !== selectedEditId))
+                  setSelectedEditId(null)
+                }}
+                title={t('deletePart')}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors"
+              >
+                ×{t('deletePart')}
+              </button>
+            </>
+          )
+        })()}
 
         <div className="ml-auto flex items-center gap-2">
           {result && (
