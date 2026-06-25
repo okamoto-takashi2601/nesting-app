@@ -445,7 +445,7 @@ export default function NestingCanvas({
       ctx.strokeRect(0, 0, W, H)
     }
 
-    // Sheet dimension lines (offset 56 — further out than layout dims)
+    // Sheet dimension lines (offset 28 — same lane as layout and margin dims)
     drawDim(ctx, 0, 0, W, 0, `${W} mm`, s, -28)
     drawDim(ctx, 0, 0, 0, H, `${H} mm`, s, 28)
 
@@ -491,9 +491,28 @@ export default function NestingCanvas({
       }
       ctx.fillStyle = isSelected ? color + '55' : color + '28'
       ctx.fill('evenodd')
-      ctx.strokeStyle = color
-      ctx.lineWidth = (isSelected ? 2 : 1.2) / s
+      const isLocked = editMode && (tempPart?.id === part.id ? false : (part as PlacedPart).locked)
+      if (isLocked) {
+        ctx.setLineDash([5 / s, 3 / s])
+        ctx.strokeStyle = '#f59e0b'
+        ctx.lineWidth = 1.5 / s
+      } else {
+        ctx.strokeStyle = color
+        ctx.lineWidth = (isSelected ? 2 : 1.2) / s
+      }
       ctx.stroke()
+      ctx.setLineDash([])
+      if (isLocked) {
+        const b2 = getBounds(pts)
+        const cx2 = (b2.minX + b2.maxX) / 2
+        const cy2 = (b2.minY + b2.maxY) / 2
+        const fs2 = Math.max(6, Math.min(14, 10 / s))
+        ctx.font = `${fs2}px sans-serif`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = '#f59e0b'
+        ctx.fillText('🔒', cx2, cy2)
+      }
     }
 
 
@@ -521,10 +540,10 @@ export default function NestingCanvas({
       if (wRgt > 1) { ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke() }
       ctx.setLineDash([])
       ctx.restore()
-      if (wTop > 1) drawDim(ctx, W, 0,  W, y0, `${wTop.toFixed(1)} mm`, s, -56)
-      if (wBot > 1) drawDim(ctx, W, y1, W, H,  `${wBot.toFixed(1)} mm`, s, -56)
-      if (wLft > 1) drawDim(ctx, 0,  H, x0, H, `${wLft.toFixed(1)} mm`, s, 56)
-      if (wRgt > 1) drawDim(ctx, x1, H, W,  H, `${wRgt.toFixed(1)} mm`, s, 56)
+      if (wTop > 1) drawDim(ctx, W, 0,  W, y0, `${wTop.toFixed(1)} mm`, s, -28)
+      if (wBot > 1) drawDim(ctx, W, y1, W, H,  `${wBot.toFixed(1)} mm`, s, -28)
+      if (wLft > 1) drawDim(ctx, 0,  H, x0, H, `${wLft.toFixed(1)} mm`, s, 28)
+      if (wRgt > 1) drawDim(ctx, x1, H, W,  H, `${wRgt.toFixed(1)} mm`, s, 28)
     }
 
     // ── Selected part dims (measurement mode) ──
@@ -722,7 +741,7 @@ export default function NestingCanvas({
 
       // Check rotate handle on selected part
       const selPart = editablePlaced.find(p => p.id === selectedEditId)
-      if (selPart) {
+      if (selPart && !selPart.locked) {
         const activePts = (tempPart?.id === selectedEditId) ? tempPart!.points : selPart.points
         const handle = getRotateHandle(activePts, viewScale)
         const dx = pt.x - handle.x, dy = pt.y - handle.y
@@ -746,15 +765,17 @@ export default function NestingCanvas({
       const hit = [...editablePlaced].reverse().find(p => pointInPoly(pt.x, pt.y, p.points))
       if (hit) {
         setSelectedEditId(hit.id)
-        const activePts = (tempPart?.id === hit.id) ? tempPart!.points : hit.points
-        setEditInteract({
-          type: 'moving',
-          partId: hit.id,
-          origPts: activePts,
-          origHoles: hit.holes,
-          startMmX: pt.x,
-          startMmY: pt.y,
-        })
+        if (!hit.locked) {
+          const activePts = (tempPart?.id === hit.id) ? tempPart!.points : hit.points
+          setEditInteract({
+            type: 'moving',
+            partId: hit.id,
+            origPts: activePts,
+            origHoles: hit.holes,
+            startMmX: pt.x,
+            startMmY: pt.y,
+          })
+        }
         return
       }
 
