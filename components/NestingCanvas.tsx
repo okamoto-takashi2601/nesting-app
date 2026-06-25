@@ -17,6 +17,37 @@ interface Props {
   t: TFunc
 }
 
+type ExportDash = 'solid' | 'dashed' | 'dashdot'
+interface ExportLayerStyle { color: string; dash: ExportDash }
+interface ExportSettings {
+  part: ExportLayerStyle
+  dim: ExportLayerStyle
+  layout: ExportLayerStyle
+  sheet: ExportLayerStyle
+}
+const EXPORT_SETTINGS_KEY = 'nesting-export-settings'
+const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  part:   { color: 'auto',    dash: 'solid'   },
+  dim:    { color: '#eab308', dash: 'dashed'  },
+  layout: { color: '#f472b6', dash: 'dashdot' },
+  sheet:  { color: '#22c55e', dash: 'solid'   },
+}
+function svgDashAttr(d: ExportDash): string {
+  if (d === 'dashed')  return ' stroke-dasharray="3,2"'
+  if (d === 'dashdot') return ' stroke-dasharray="6,2,1,2"'
+  return ''
+}
+function dxfLtype(d: ExportDash): string {
+  if (d === 'dashed')  return 'DASHED'
+  if (d === 'dashdot') return 'DASHDOT'
+  return 'CONTINUOUS'
+}
+function canvasDashPx(d: ExportDash, s: number): number[] {
+  if (d === 'dashed')  return [5 / s, 3 / s]
+  if (d === 'dashdot') return [6 / s, 2 / s, 1 / s, 2 / s]
+  return []
+}
+
 const PALETTE = ['#4f8ef7', '#4fcf8e', '#f7c34f', '#f77f4f', '#cf4ff7', '#4ff7e8']
 const PAD = 32
 const HANDLE_LIFT_PX = 22
@@ -197,6 +228,19 @@ export default function NestingCanvas({
   const [viewOffset, setViewOffset] = useState({ x: PAD, y: PAD })
   const [showExport, setShowExport] = useState(false)
   const [exportBlocked, setExportBlocked] = useState(false)
+  const [showExportSettings, setShowExportSettings] = useState(false)
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(() => {
+    if (typeof window === 'undefined') return DEFAULT_EXPORT_SETTINGS
+    try {
+      const raw = localStorage.getItem(EXPORT_SETTINGS_KEY)
+      if (raw) return { ...DEFAULT_EXPORT_SETTINGS, ...JSON.parse(raw) }
+    } catch {}
+    return DEFAULT_EXPORT_SETTINGS
+  })
+  function saveExportSettings(next: ExportSettings) {
+    setExportSettings(next)
+    try { localStorage.setItem(EXPORT_SETTINGS_KEY, JSON.stringify(next)) } catch {}
+  }
 
   // Measurement state
   const [measureMode, setMeasureMode] = useState(false)
@@ -481,9 +525,9 @@ export default function NestingCanvas({
       const lH = +(lMaxY - lMinY).toFixed(1)
 
       ctx.save()
-      ctx.strokeStyle = '#f472b6'
+      ctx.strokeStyle = exportSettings.layout.color
       ctx.lineWidth = 0.8 / s
-      ctx.setLineDash([6 / s, 2 / s, 1 / s, 2 / s])
+      ctx.setLineDash(canvasDashPx(exportSettings.layout.dash, s))
       ctx.strokeRect(lMinX, lMinY, lMaxX - lMinX, lMaxY - lMinY)
       ctx.setLineDash([])
       ctx.restore()
@@ -916,6 +960,7 @@ export default function NestingCanvas({
 
   function exportSVG() {
     if (!result) return
+    const es = exportSettings
     const W = sheetConfig.width, H = sheetConfig.height
     const pad = 50
 
@@ -942,28 +987,29 @@ export default function NestingCanvas({
     // Sheet border
     if (boundary && boundary.length >= 3) {
       const bd = boundary.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-      lines.push(`<path d="${bd}" fill="none" stroke="#22c55e" stroke-width="1"/>`)
+      lines.push(`<path d="${bd}" fill="none" stroke="${es.sheet.color}" stroke-width="1"${svgDashAttr(es.sheet.dash)}/>`)
     } else {
-      lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#22c55e" stroke-width="1"/>`)
+      lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="${es.sheet.color}" stroke-width="1"${svgDashAttr(es.sheet.dash)}/>`)
     }
 
     // Layout bounding box
-    lines.push(`<rect x="${lMinX.toFixed(2)}" y="${lMinY.toFixed(2)}" width="${lW.toFixed(2)}" height="${lH.toFixed(2)}" fill="none" stroke="#f472b6" stroke-width="0.8" stroke-dasharray="6,2,1,2"/>`)
+    lines.push(`<rect x="${lMinX.toFixed(2)}" y="${lMinY.toFixed(2)}" width="${lW.toFixed(2)}" height="${lH.toFixed(2)}" fill="none" stroke="${es.layout.color}" stroke-width="0.8"${svgDashAttr(es.layout.dash)}/>`)
 
     // Parts with holes
     for (const part of result.placed) {
-      const color = labelColors.get(part.label) ?? '#4f8ef7'
+      const paletteColor = labelColors.get(part.label) ?? '#4f8ef7'
+      const partColor = es.part.color === 'auto' ? paletteColor : es.part.color
       let d = part.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
       if (part.holes)
         for (const hole of part.holes)
           d += ' ' + hole.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-      lines.push(`<path fill-rule="evenodd" d="${d}" fill="${color}30" stroke="${color}" stroke-width="0.8"/>`)
+      lines.push(`<path fill-rule="evenodd" d="${d}" fill="${partColor}30" stroke="${partColor}" stroke-width="0.8"${svgDashAttr(es.part.dash)}/>`)
     }
 
     const dimText = (x: number, y: number, txt: string, rotate?: string) =>
-      `<text x="${x}" y="${y}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="7" fill="#eab308" stroke="white" stroke-width="2" paint-order="stroke" stroke-linejoin="round"${rotate ? ` transform="${rotate}"` : ''}>${txt}</text>`
+      `<text x="${x}" y="${y}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="7" fill="${es.dim.color}" stroke="white" stroke-width="2" paint-order="stroke" stroke-linejoin="round"${rotate ? ` transform="${rotate}"` : ''}>${txt}</text>`
     const dimLine = (x1: number, y1: number, x2: number, y2: number) =>
-      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#eab308" stroke-width="0.5" stroke-dasharray="3,2"/>`
+      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${es.dim.color}" stroke-width="0.5"${svgDashAttr(es.dim.dash)}/>`
 
     // === Width dims (below sheet) ===
     // Layout width at y = H+10
@@ -1021,6 +1067,7 @@ export default function NestingCanvas({
 
   function exportDXF() {
     if (!result) return
+    const es = exportSettings
     const W = sheetConfig.width, H = sheetConfig.height
     const L: string[] = []
     const add = (...a: (string | number)[]) => a.forEach(v => L.push(String(v)))
@@ -1060,8 +1107,8 @@ export default function NestingCanvas({
       '0','TABLE','2','LAYER','70','4',
       '0','LAYER','2','0','70','0','62','7','6','CONTINUOUS',
       '0','LAYER','2','BORDER','70','0','62','3','6','CONTINUOUS',
-      '0','LAYER','2','LAYOUT','70','0','62','211','6','DASHDOT',
-      '0','LAYER','2','DIM','70','0','62','2','6','DASHED',
+      '0','LAYER','2','LAYOUT','70','0','62','211','6',dxfLtype(es.layout.dash),
+      '0','LAYER','2','DIM','70','0','62','2','6',dxfLtype(es.dim.dash),
       '0','ENDTAB',
       '0','ENDSEC')
     add('0','SECTION','2','ENTITIES')
@@ -1076,10 +1123,10 @@ export default function NestingCanvas({
     }
 
     // Layout bounding box
-    addLine('LAYOUT', lMinX, lMinY, lMaxX, lMinY, 'DASHDOT')
-    addLine('LAYOUT', lMaxX, lMinY, lMaxX, lMaxY, 'DASHDOT')
-    addLine('LAYOUT', lMaxX, lMaxY, lMinX, lMaxY, 'DASHDOT')
-    addLine('LAYOUT', lMinX, lMaxY, lMinX, lMinY, 'DASHDOT')
+    addLine('LAYOUT', lMinX, lMinY, lMaxX, lMinY, dxfLtype(es.layout.dash))
+    addLine('LAYOUT', lMaxX, lMinY, lMaxX, lMaxY, dxfLtype(es.layout.dash))
+    addLine('LAYOUT', lMaxX, lMaxY, lMinX, lMaxY, dxfLtype(es.layout.dash))
+    addLine('LAYOUT', lMinX, lMaxY, lMinX, lMinY, dxfLtype(es.layout.dash))
 
     // Parts: outer boundary + holes on same layer 0
     for (const part of result.placed) {
@@ -1233,7 +1280,7 @@ export default function NestingCanvas({
     isDragging.current ? 'grabbing' : 'grab'
 
   return (
-    <div className="flex flex-col w-full h-full bg-slate-800" onClick={() => setShowExport(false)}>
+    <div className="flex flex-col w-full h-full bg-slate-800" onClick={() => { setShowExport(false); setShowExportSettings(false) }}>
       {/* ── Toolbar ── */}
       <div className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 border-b border-slate-700 shrink-0">
         <button onClick={fitView}
@@ -1357,6 +1404,97 @@ export default function NestingCanvas({
         })()}
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Export settings ⚙ */}
+          <div className="relative">
+            {showExportSettings && (
+              <div
+                onClick={e => e.stopPropagation()}
+                className="absolute top-full right-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-2xl z-30 p-3 w-64"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-slate-300 font-medium">Export Style</span>
+                  <button
+                    onClick={() => saveExportSettings(DEFAULT_EXPORT_SETTINGS)}
+                    className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors"
+                  >
+                    Reset
+                  </button>
+                </div>
+                {([
+                  { key: 'part'   as const, label: 'Part border'  },
+                  { key: 'dim'    as const, label: 'Dimensions'   },
+                  { key: 'layout' as const, label: 'Layout bbox'  },
+                  { key: 'sheet'  as const, label: 'Sheet border' },
+                ] as const).map(({ key, label }) => {
+                  const style = exportSettings[key]
+                  const isAuto = key === 'part' && style.color === 'auto'
+                  return (
+                    <div key={key} className="flex items-center gap-2 py-1.5 border-t border-slate-700/60">
+                      <span className="text-[11px] text-slate-400 w-[72px] shrink-0">{label}</span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <label
+                          title={isAuto ? 'Click to pick color' : ''}
+                          className="relative w-5 h-5 rounded cursor-pointer overflow-hidden border border-slate-600 shrink-0"
+                          style={{ backgroundColor: isAuto ? '#555' : style.color }}
+                        >
+                          <input
+                            type="color"
+                            value={isAuto ? '#888888' : style.color}
+                            onChange={e => saveExportSettings({
+                              ...exportSettings,
+                              [key]: { ...style, color: e.target.value },
+                            })}
+                            className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                          />
+                        </label>
+                        {key === 'part' && (
+                          <button
+                            onClick={() => saveExportSettings({
+                              ...exportSettings,
+                              part: { ...style, color: isAuto ? '#4f8ef7' : 'auto' },
+                            })}
+                            className={`text-[9px] px-1 py-0.5 rounded transition-colors ${isAuto ? 'bg-slate-600 text-slate-200' : 'text-slate-600 hover:text-slate-400'}`}
+                          >
+                            auto
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-0.5 ml-auto">
+                        {(['solid', 'dashed', 'dashdot'] as ExportDash[]).map(d => (
+                          <button
+                            key={d}
+                            onClick={() => saveExportSettings({
+                              ...exportSettings,
+                              [key]: { ...style, dash: d },
+                            })}
+                            className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                              style.dash === d
+                                ? 'bg-blue-600/80 text-white'
+                                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-700'
+                            }`}
+                          >
+                            {d === 'solid' ? '——' : d === 'dashed' ? '– –' : '–·–'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <button
+              onClick={e => { e.stopPropagation(); setShowExportSettings(v => !v); setShowExport(false) }}
+              title="Export style settings"
+              className={`w-7 h-7 flex items-center justify-center rounded text-base transition-colors ${
+                showExportSettings
+                  ? 'bg-slate-700 text-slate-200'
+                  : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              ⚙
+            </button>
+          </div>
+
           {result && (
             <div className="relative">
               {exportBlocked && (
