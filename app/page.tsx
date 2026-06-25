@@ -53,8 +53,8 @@ function PartPreview({ points, holes, color }: { points: { x: number; y: number 
 export default function Page() {
   const [parts, setParts] = useState<InputPolygon[]>([])
   const [sheetConfig, setSheetConfig] = useState<SheetConfig>({
-    width: 500,
-    height: 500,
+    width: 297,
+    height: 210,
     spacing: 5,
     margin: 5,
     rotationStep: 1,
