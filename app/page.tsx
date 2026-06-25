@@ -111,6 +111,8 @@ export default function Page() {
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
   const workerRef = useRef<Worker | null>(null)
+  const isReNestingRef = useRef(false)
+  const lockedPartsRef = useRef<PlacedPart[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sheetFileInputRef = useRef<HTMLInputElement>(null)
 
@@ -145,7 +147,12 @@ export default function Page() {
         setNestResult(prev => ({ placed: e.data.placed, unplaced: prev?.unplaced ?? [], efficiency: prev?.efficiency ?? 0, lossArea: prev?.lossArea ?? 0, sheetsNeeded: prev?.sheetsNeeded ?? 0 }))
         setProgress({ current: e.data.current, total: e.data.total })
       } else if (e.data.type === 'result') {
-        setNestResult({ placed: e.data.placed, unplaced: e.data.unplaced, efficiency: e.data.efficiency, lossArea: e.data.lossArea, sheetsNeeded: e.data.sheetsNeeded })
+        const newPlaced = isReNestingRef.current
+          ? [...lockedPartsRef.current, ...e.data.placed]
+          : e.data.placed
+        isReNestingRef.current = false
+        setNestResult({ placed: newPlaced, unplaced: e.data.unplaced, efficiency: e.data.efficiency, lossArea: e.data.lossArea, sheetsNeeded: e.data.sheetsNeeded })
+        setEditablePlaced(newPlaced)
         setProgress(null)
         setStatus('done')
       } else if (e.data.type === 'error') {
@@ -253,7 +260,12 @@ export default function Page() {
         setNestResult(prev => ({ placed: e.data.placed, unplaced: prev?.unplaced ?? [], efficiency: prev?.efficiency ?? 0, lossArea: prev?.lossArea ?? 0, sheetsNeeded: prev?.sheetsNeeded ?? 0 }))
         setProgress({ current: e.data.current, total: e.data.total })
       } else if (e.data.type === 'result') {
-        setNestResult({ placed: e.data.placed, unplaced: e.data.unplaced, efficiency: e.data.efficiency, lossArea: e.data.lossArea, sheetsNeeded: e.data.sheetsNeeded })
+        const newPlaced = isReNestingRef.current
+          ? [...lockedPartsRef.current, ...e.data.placed]
+          : e.data.placed
+        isReNestingRef.current = false
+        setNestResult({ placed: newPlaced, unplaced: e.data.unplaced, efficiency: e.data.efficiency, lossArea: e.data.lossArea, sheetsNeeded: e.data.sheetsNeeded })
+        setEditablePlaced(newPlaced)
         setProgress(null)
         setStatus('done')
       } else if (e.data.type === 'error') {
@@ -294,6 +306,34 @@ export default function Page() {
     workerRef.current.postMessage({ polygons: expanded, sheetConfig: configWithShape })
   }, [parts, sheetConfig, sheetBoundary, sheetObstacles])
 
+  const handleReNest = useCallback(() => {
+    if (!workerRef.current || editablePlaced.length === 0) return
+    const locked = editablePlaced.filter(p => p.locked)
+    const free = editablePlaced.filter(p => !p.locked)
+    if (free.length === 0) return
+    lockedPartsRef.current = locked
+    isReNestingRef.current = true
+    setStatus('running')
+    setProgress(null)
+    const polygonsForWorker = free.map(p => ({
+      id: p.id,
+      label: p.label,
+      color: p.color,
+      quantity: 1,
+      points: p.points,
+      holes: p.holes,
+    }))
+    const configWithShape: SheetConfig = {
+      ...sheetConfig,
+      boundary: sheetBoundary ?? undefined,
+      obstacles: sheetObstacles.length > 0 ? sheetObstacles : undefined,
+    }
+    workerRef.current.postMessage({
+      polygons: polygonsForWorker,
+      sheetConfig: configWithShape,
+      lockedParts: locked,
+    })
+  }, [editablePlaced, sheetConfig, sheetBoundary, sheetObstacles])
 
   const selectedLayout = layoutOptions.find(o => o.value === sheetConfig.layoutMode)
 
@@ -301,8 +341,10 @@ export default function Page() {
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
       <div
-        className="w-72 shrink-0 flex flex-col bg-slate-900 border-r border-slate-700 overflow-y-auto"
+        className="w-72 shrink-0 flex flex-col bg-slate-900 border-r border-slate-700 overflow-hidden"
       >
+        {/* Fixed top: header + parts input */}
+        <div className="shrink-0 flex flex-col">
         {/* Header */}
         <div className="px-4 pt-4 pb-3 border-b border-slate-700">
           <div className="flex items-center justify-between">
@@ -449,14 +491,24 @@ export default function Page() {
           ) : (
             /* Import parts */
             <>
-              <div
-                className="border-2 border-dashed border-slate-700 rounded-lg p-5 text-center cursor-pointer hover:border-blue-500/40 hover:bg-slate-800/30 transition-colors"
-                onClick={() => fileInputRef.current?.click()}
-                onDrop={e => { e.preventDefault(); const f = Array.from(e.dataTransfer.files); if (f.length) handleFiles(f) }}
-                onDragOver={e => e.preventDefault()}
-              >
-                <p className="text-xs text-slate-400">{t('dropPartsHint')}</p>
-                <p className="text-[10px] text-slate-600 mt-1">{t('multipleFilesSupported')}</p>
+              <div className="relative">
+                <div
+                  className="border-2 border-dashed border-slate-700 rounded-lg p-5 text-center cursor-pointer hover:border-blue-500/40 hover:bg-slate-800/30 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                  onDrop={e => { e.preventDefault(); const f = Array.from(e.dataTransfer.files); if (f.length) handleFiles(f) }}
+                  onDragOver={e => e.preventDefault()}
+                >
+                  <p className="text-xs text-slate-400">{t('dropPartsHint')}</p>
+                  <p className="text-[10px] text-slate-600 mt-1">{t('multipleFilesSupported')}</p>
+                </div>
+                <div className="absolute top-2 right-2 group" onClick={e => e.stopPropagation()}>
+                  <span className="w-4 h-4 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-400 text-[9px] flex items-center justify-center cursor-default select-none transition-colors">?</span>
+                  <div className="absolute bottom-full right-0 mb-1.5 hidden group-hover:block z-50 pointer-events-none w-52">
+                    <div className="bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 text-[10px] text-slate-300 leading-relaxed shadow-xl whitespace-pre-line">
+                      {t('importHints')}
+                    </div>
+                  </div>
+                </div>
               </div>
               <input
                 ref={fileInputRef}
@@ -474,11 +526,12 @@ export default function Page() {
           )}
         </div>
 
-        {/* Parts list */}
+        </div>{/* end fixed top */}
+
+        {/* Parts list — only this section scrolls */}
         {parts.length > 0 && (
-          <div className="px-4 pb-2">
-            <div className="border-t border-slate-700 mb-2" />
-            <div className="flex items-center justify-between mb-2">
+          <div className="flex flex-col border-t border-slate-700 min-h-0 max-h-[35vh]">
+            <div className="shrink-0 flex items-center justify-between px-4 py-2">
               <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
                 {t('partsCount', { n: parts.length })}
               </span>
@@ -489,7 +542,7 @@ export default function Page() {
                 {t('clearAll')}
               </button>
             </div>
-            <div className="space-y-1 max-h-48 overflow-y-auto">
+            <div className="overflow-y-auto min-h-0 px-4 pb-2 space-y-1">
               {parts.map((part, idx) => {
                 const enabled = part.enabled !== false
                 const color = PALETTE[idx % PALETTE.length]
@@ -520,10 +573,11 @@ export default function Page() {
           </div>
         )}
 
-        <div className="border-t border-slate-700 mx-4 my-2" />
+        {/* Sheet settings + buttons */}
+        <div className="shrink-0 border-t border-slate-700 overflow-y-auto max-h-[60vh]">
 
         {/* Sheet settings */}
-        <div className="px-4 pb-4 space-y-3">
+        <div className="px-4 pt-4 pb-4 space-y-3">
           <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{t('sheet')}</div>
 
           {/* Mode radio */}
@@ -692,6 +746,20 @@ export default function Page() {
           )}
         </div>
 
+        {/* Re-nest button — shown in edit mode when free parts exist */}
+        {editMode && editablePlaced.some(p => !p.locked) && (
+          <div className="px-4 pb-4">
+            <button
+              onClick={handleReNest}
+              disabled={status === 'running'}
+              title={t('reNestTitle')}
+              className="w-full py-2 rounded bg-amber-950 hover:bg-amber-900 disabled:bg-slate-800 disabled:text-slate-600 text-amber-400 font-medium text-sm transition-colors border border-amber-500/20 disabled:border-transparent"
+            >
+              {t('reNestFree')}
+            </button>
+          </div>
+        )}
+
         {/* Result */}
         {status === 'error' && (
           <div className="px-4 pb-4">
@@ -700,6 +768,7 @@ export default function Page() {
             </div>
           </div>
         )}
+        </div>{/* end fixed bottom */}
       </div>
 
       <div className="flex-1 overflow-hidden">

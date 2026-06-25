@@ -899,7 +899,133 @@ function nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPla
   return { results: results, unplaced: unplaced };
 }
 
-function nest(polygons, sheetConfig) {
+// Exact polygon overlap: AABB pre-reject, then vertex-in-polygon + edge intersection.
+// Handles concave polygons correctly (unlike SAT which gives false negatives).
+function polygonsOverlap(a, b) {
+  var ba = getBounds(a), bb = getBounds(b);
+  if (ba.maxX <= bb.minX || bb.maxX <= ba.minX || ba.maxY <= bb.minY || bb.maxY <= ba.minY) return false;
+  var an = a.length, bn = b.length, i, ai, bi;
+  for (i = 0; i < an; i++) {
+    if (pointInPolygon(a[i].x, a[i].y, b)) return true;
+  }
+  for (i = 0; i < bn; i++) {
+    if (pointInPolygon(b[i].x, b[i].y, a)) return true;
+  }
+  for (ai = 0; ai < an; ai++) {
+    var a1 = a[ai], a2 = a[(ai + 1) % an];
+    for (bi = 0; bi < bn; bi++) {
+      var b1 = b[bi], b2 = b[(bi + 1) % bn];
+      if (segmentsIntersect(a1.x, a1.y, a2.x, a2.y, b1.x, b1.y, b2.x, b2.y)) return true;
+    }
+  }
+  return false;
+}
+
+// Find minimum shift (direction dx/dy) where two identical copies just separate.
+// Uses exact polygon overlap (not SAT) → correct for concave interlocking shapes.
+// Returns the contact pitch + spacing.
+function findInterlockPitch(pts0, edgeStr, spacing, dx, dy) {
+  var b0 = getBounds(pts0);
+  var range = Math.abs(dx) > 0.5 ? b0.maxX : b0.maxY;
+  var lo = 0.5;
+  var hi = range;
+  if (!polygonsOverlap(pts0, translate(pts0, dx * lo, dy * lo))) return spacing;
+  while (hi - lo > 0.1) {
+    var mid = (lo + hi) / 2;
+    var shifted = translate(pts0, dx * mid, dy * mid);
+    if (polygonsOverlap(pts0, shifted)) lo = mid;
+    else hi = mid;
+  }
+  return hi + spacing;
+}
+
+function pickInterlockRotation(sortedPolygons, candidateRots, sw, sh, spacing, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
+  var tol = 0.001;
+  var bestRot = candidateRots[0];
+  var bestScore = -1;
+  for (var ri = 0; ri < candidateRots.length; ri++) {
+    var rot0 = candidateRots[ri];
+    var poly0 = sortedPolygons[0];
+    var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+    var b0 = getBounds(p0); p0 = translate(p0, -b0.minX, -b0.minY);
+    var b = getBounds(p0);
+    var w0 = b.maxX, h0 = b.maxY;
+    if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) continue;
+    var es0 = poly0.edgeStr;
+    var pitchX = findInterlockPitch(p0, es0, spacing, 1, 0);
+    var pitchY = findInterlockPitch(p0, es0, spacing, 0, 1);
+    if (pitchX <= 0 || pitchY <= 0) continue;
+    var perRow = Math.floor((sw - 2 * MARGIN - w0) / pitchX) + 1;
+    var rows = Math.floor((sh - 2 * MARGIN - h0) / pitchY) + 1;
+    if (perRow < 1 || rows < 1) continue;
+    var score = perRow * rows;
+    if (score > bestScore) { bestScore = score; bestRot = rot0; }
+  }
+  return bestRot;
+}
+
+// Interlock layout: find minimum x-pitch and y-pitch by binary search (exact polygon overlap),
+// then tile parts in straight rows at those pitches (bounding boxes may overlap).
+function nestInterlock(sorted, sw, sh, spacing, uniformRot, boundary, margin) {
+  var MARGIN = typeof margin === 'number' ? margin : 5;
+  var tol = 0.001;
+  var results = [];
+  var unplaced = [];
+  if (sorted.length === 0) return { results: results, unplaced: unplaced };
+
+  var rot0 = uniformRot !== null ? uniformRot : 0;
+  var poly0 = sorted[0];
+  var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
+  var b0r = getBounds(p0); p0 = translate(p0, -b0r.minX, -b0r.minY);
+  var b0 = getBounds(p0);
+  var w0 = b0.maxX, h0 = b0.maxY;
+  var es0 = poly0.edgeStr;
+
+  if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) {
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
+    return { results: results, unplaced: unplaced };
+  }
+
+  var pitchX = findInterlockPitch(p0, es0, spacing, 1, 0);
+  var pitchY = findInterlockPitch(p0, es0, spacing, 0, 1);
+
+  var rowSlots = [];
+  var x = MARGIN;
+  while (x + w0 <= sw - MARGIN + tol) {
+    rowSlots.push(x);
+    x += pitchX;
+  }
+
+  if (rowSlots.length === 0) {
+    for (var i = 0; i < sorted.length; i++) unplaced.push(sorted[i].id);
+    return { results: results, unplaced: unplaced };
+  }
+
+  var pi = 0;
+  var rowY = MARGIN;
+
+  while (pi < sorted.length && rowY + h0 <= sh - MARGIN + tol) {
+    for (var slot = 0; slot < rowSlots.length && pi < sorted.length; slot++) {
+      var poly = sorted[pi];
+      var pts = rot0 !== 0 ? rotatePoints(poly.points, rot0) : poly.points.map(function(p) { return { x: p.x, y: p.y }; });
+      var b = getBounds(pts); pts = translate(pts, -b.minX, -b.minY);
+      var tx = rowSlots[slot];
+      var ty = rowY;
+      var moved = translate(pts, tx, ty);
+      var holes = transformHoles(poly.holes, rot0, -b.minX, -b.minY, tx, ty);
+      results.push({ id: poly.id, label: poly.label, points: moved, holes: holes, rotation: rot0, color: poly.color });
+      pi++;
+    }
+    rowY += pitchY;
+  }
+
+  self.postMessage({ type: 'progress', placed: results, current: pi, total: sorted.length });
+  for (var j = pi; j < sorted.length; j++) unplaced.push(sorted[j].id);
+  return { results: results, unplaced: unplaced };
+}
+
+function nest(polygons, sheetConfig, lockedParts) {
   var sw = sheetConfig.width;
   var sh = sheetConfig.height;
   var spacing = sheetConfig.spacing || 0;
@@ -951,6 +1077,15 @@ function nest(polygons, sheetConfig) {
     initBounds.push(getBounds(obs));
     initEdgeStr.push(computeEdgeStraight(obs));
   }
+  var lockedList = lockedParts || [];
+  for (var li = 0; li < lockedList.length; li++) {
+    var lpts = sanitizePoints(lockedList[li].points);
+    if (!lpts || lpts.length < 3) continue;
+    initPlaced.push(lpts);
+    initBounds.push(getBounds(lpts));
+    initEdgeStr.push(computeEdgeStraight(lpts));
+  }
+  var hasLocked = lockedList.length > 0;
 
   var uniformRot = null;
   if (layoutMode === 'chidori60') {
@@ -961,19 +1096,25 @@ function nest(polygons, sheetConfig) {
     uniformRot = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
   } else if (layoutMode === 'back-back') {
     uniformRot = pickBackBackRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
+  } else if (layoutMode === 'interlock') {
+    uniformRot = pickInterlockRotation(sorted, makeRotations(30), sw, sh, spacing, margin);
   }
 
   var finalResults, finalUnplaced;
 
-  if (layoutMode === 'same') {
+  if (layoutMode === 'same' && !hasLocked) {
     var out = nestSame(sorted, sw, sh, spacing, uniformRot, boundary, margin);
     finalResults = out.results;
     finalUnplaced = out.unplaced;
-  } else if (layoutMode === 'back-back') {
+  } else if (layoutMode === 'back-back' && !hasLocked) {
     var out = nestBackBack(sorted, sw, sh, spacing, uniformRot, boundary, margin);
     finalResults = out.results;
     finalUnplaced = out.unplaced;
-  } else if (layoutMode !== 'free') {
+  } else if (layoutMode === 'interlock' && !hasLocked) {
+    var out = nestInterlock(sorted, sw, sh, spacing, uniformRot, boundary, margin);
+    finalResults = out.results;
+    finalUnplaced = out.unplaced;
+  } else if (layoutMode !== 'free' && !hasLocked) {
     var out = nestStructured(sorted, sw, sh, spacing, layoutMode, uniformRot, initPlaced, initBounds, initEdgeStr, boundary, margin);
     finalResults = out.results;
     finalUnplaced = out.unplaced;
@@ -985,22 +1126,27 @@ function nest(polygons, sheetConfig) {
     var esw_free = sw - 2 * MARGIN_FREE;
     var esh_free = sh - 2 * MARGIN_FREE;
 
-    var rotSameF = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
-    var outSameF = nestSame(sorted, sw, sh, spacing, rotSameF, boundary, margin);
+    var bestStructF;
+    if (!hasLocked) {
+      var rotSameF = pickSameRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
+      var outSameF = nestSame(sorted, sw, sh, spacing, rotSameF, boundary, margin);
 
-    var rotBBF = pickBackBackRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
-    var outBBF = nestBackBack(sorted, sw, sh, spacing, rotBBF, boundary, margin);
+      var rotBBF = pickBackBackRotation(sorted, COARSE_ROTS, sw, sh, spacing, margin);
+      var outBBF = nestBackBack(sorted, sw, sh, spacing, rotBBF, boundary, margin);
 
-    var rotC30F = pickBestUniformRotation(sorted, CHIDORI30_ROTS, sw, sh, spacing, boundary);
-    var outC30F = nestStructured(sorted, sw, sh, spacing, 'chidori30', rotC30F, initPlaced, initBounds, initEdgeStr, boundary, margin);
+      var rotC30F = pickBestUniformRotation(sorted, CHIDORI30_ROTS, sw, sh, spacing, boundary);
+      var outC30F = nestStructured(sorted, sw, sh, spacing, 'chidori30', rotC30F, initPlaced, initBounds, initEdgeStr, boundary, margin);
 
-    var rotC60F = pickBestUniformRotation(sorted, CHIDORI60_ROTS, sw, sh, spacing, boundary);
-    var outC60F = nestStructured(sorted, sw, sh, spacing, 'chidori60', rotC60F, initPlaced, initBounds, initEdgeStr, boundary, margin);
+      var rotC60F = pickBestUniformRotation(sorted, CHIDORI60_ROTS, sw, sh, spacing, boundary);
+      var outC60F = nestStructured(sorted, sw, sh, spacing, 'chidori60', rotC60F, initPlaced, initBounds, initEdgeStr, boundary, margin);
 
-    var structOutsF = [outSameF, outBBF, outC30F, outC60F];
-    var bestStructF = structOutsF[0];
-    for (var sciF = 1; sciF < structOutsF.length; sciF++) {
-      if (structOutsF[sciF].results.length > bestStructF.results.length) bestStructF = structOutsF[sciF];
+      var structOutsF = [outSameF, outBBF, outC30F, outC60F];
+      bestStructF = structOutsF[0];
+      for (var sciF = 1; sciF < structOutsF.length; sciF++) {
+        if (structOutsF[sciF].results.length > bestStructF.results.length) bestStructF = structOutsF[sciF];
+      }
+    } else {
+      bestStructF = { results: [], unplaced: sorted.map(function(s) { return s.id; }) };
     }
 
     // Build id→poly lookup for edgeStr
@@ -1100,8 +1246,9 @@ function nest(polygons, sheetConfig) {
 self.onmessage = function(e) {
   var polygons = e.data.polygons;
   var sheetConfig = e.data.sheetConfig;
+  var lockedParts = e.data.lockedParts || [];
   try {
-    var result = nest(polygons, sheetConfig);
+    var result = nest(polygons, sheetConfig, lockedParts);
     self.postMessage({ type: 'result', placed: result.placed, unplaced: result.unplaced, efficiency: result.efficiency, lossArea: result.lossArea, sheetsNeeded: result.sheetsNeeded });
   } catch (err) {
     self.postMessage({ type: 'error', message: err.message });

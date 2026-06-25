@@ -1,6 +1,6 @@
 export interface Point { x: number; y: number }
 export interface InputPolygon { id: string; label: string; points: Point[]; holes?: Point[][]; color: string; quantity: number; enabled?: boolean }
-export interface PlacedPart { id: string; label: string; points: Point[]; holes?: Point[][]; rotation: number; color: string }
+export interface PlacedPart { id: string; label: string; points: Point[]; holes?: Point[][]; rotation: number; color: string; locked?: boolean }
 export interface NestResult {
   placed: PlacedPart[]
   unplaced: string[]
