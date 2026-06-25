@@ -251,12 +251,36 @@ export default function NestingCanvas({
     return map
   }, [result])
 
+  const labelCounts = useMemo(() => {
+    if (!result) return new Map<string, number>()
+    const m = new Map<string, number>()
+    for (const p of result.placed) m.set(p.label, (m.get(p.label) ?? 0) + 1)
+    return m
+  }, [result])
+
+  const wasteInfo = useMemo(() => {
+    if (!result || result.placed.length === 0) return null
+    let x0 = sheetConfig.width, y0 = sheetConfig.height, x1 = 0, y1 = 0
+    for (const p of result.placed)
+      for (const pt of p.points) {
+        if (pt.x < x0) x0 = pt.x; if (pt.y < y0) y0 = pt.y
+        if (pt.x > x1) x1 = pt.x; if (pt.y > y1) y1 = pt.y
+      }
+    return {
+      top:    +y0.toFixed(1),
+      bottom: +(sheetConfig.height - y1).toFixed(1),
+      left:   +x0.toFixed(1),
+      right:  +(sheetConfig.width - x1).toFixed(1),
+    }
+  }, [result, sheetConfig])
+
   const fitView = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const w = canvas.width, h = canvas.height
-    const sx = (w - PAD * 2) / sheetConfig.width
-    const sy = (h - PAD * 2) / sheetConfig.height
+    const fitPad = 80
+    const sx = (w - fitPad * 2) / sheetConfig.width
+    const sy = (h - fitPad * 2) / sheetConfig.height
     const s = Math.min(sx, sy, 4)
     const shW = sheetConfig.width * s, shH = sheetConfig.height * s
     setViewScale(s)
@@ -1376,33 +1400,81 @@ export default function NestingCanvas({
       </div>
 
       {/* ── Status bar ── */}
-      <div className="flex items-center gap-4 px-4 py-1.5 bg-slate-900 border-t border-slate-700 shrink-0 text-[11px] min-h-[28px]">
+      <div className="flex items-center gap-3 px-4 py-1.5 bg-slate-900 border-t border-slate-700 shrink-0 text-[11px] min-h-[28px]">
         {result ? (
           <>
-            <span className="text-slate-400">
-              <span className="text-slate-200 font-medium">{result.placed.length}</span> {t('partsPlaced')}
+            <span className="text-slate-400 shrink-0">
+              <span className="text-slate-200 font-medium">{result.placed.length}</span> {t('partsPerSheet')}
             </span>
-            <span className="text-slate-400">
-              {t('utilization')} <span className={`font-semibold ${result.efficiency >= 80 ? 'text-emerald-400' : result.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
+
+            <div className="w-px h-3 bg-slate-700 shrink-0" />
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-slate-500">{t('utilization')}</span>
+              <div className="w-14 h-1 bg-slate-800 rounded-full overflow-hidden">
+                <div className="h-full rounded-full bg-blue-500 transition-all"
+                  style={{ width: `${result.efficiency}%` }} />
+              </div>
+              <span className={`font-semibold ${result.efficiency >= 80 ? 'text-emerald-400' : result.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
                 {result.efficiency}%
               </span>
-            </span>
-            {editMode && (
-              <span className="text-blue-400 font-medium">{t('editModeLabel')}</span>
+            </div>
+
+            {result.lossArea > 0 && (
+              <>
+                <div className="w-px h-3 bg-slate-700 shrink-0" />
+                <span className="text-slate-500 shrink-0">
+                  {t('lossArea')} <span className="text-slate-400">{(result.lossArea / 100).toFixed(0)} cm²</span>
+                </span>
+              </>
             )}
-            <div className="ml-auto flex items-center gap-3">
-              {Array.from(labelColors.entries()).slice(0, 6).map(([label, color]) => (
-                <button key={label}
-                  onClick={() => {
-                    if (measureMode || editMode) return
-                    const part = result.placed.find(p => p.label === label)
-                    setSelectedPart(prev => prev?.label === label ? null : (part ?? null))
-                  }}
-                  className="flex items-center gap-1 text-slate-400 hover:text-slate-200 transition-colors">
-                  <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: color }} />
-                  {label}
-                </button>
-              ))}
+
+            {wasteInfo && (
+              <>
+                <div className="w-px h-3 bg-slate-700 shrink-0" />
+                <span className="text-slate-500 shrink-0 tabular-nums">
+                  {[
+                    { key: 'top',    val: wasteInfo.top    },
+                    { key: 'bottom', val: wasteInfo.bottom },
+                    { key: 'left',   val: wasteInfo.left   },
+                    { key: 'right',  val: wasteInfo.right  },
+                  ].map(({ key, val }, i) => (
+                    <span key={key}>
+                      {i > 0 && <span className="text-slate-700 mx-1">–</span>}
+                      <span className="text-slate-500">{t(key)} </span>
+                      <span className="text-slate-300">{val}mm</span>
+                    </span>
+                  ))}
+                </span>
+              </>
+            )}
+
+            {editMode && (
+              <>
+                <div className="w-px h-3 bg-slate-700 shrink-0" />
+                <span className="text-blue-400 font-medium shrink-0">{t('editModeLabel')}</span>
+              </>
+            )}
+
+            <div className="ml-auto flex items-center gap-3 overflow-hidden">
+              {Array.from(labelCounts.entries()).slice(0, 6).map(([label, count]) => {
+                const color = labelColors.get(label) ?? '#4f8ef7'
+                return (
+                  <button key={label}
+                    onClick={() => {
+                      if (measureMode || editMode) return
+                      const part = result.placed.find(p => p.label === label)
+                      setSelectedPart(prev => prev?.label === label ? null : (part ?? null))
+                    }}
+                    className="flex items-center gap-1 text-slate-400 hover:text-slate-200 transition-colors shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: color }} />
+                    {label}
+                    {labelCounts.size > 1 && (
+                      <span className="text-slate-600 font-mono">×{count}</span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           </>
         ) : (

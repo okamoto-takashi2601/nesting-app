@@ -1,5 +1,5 @@
 export interface Point { x: number; y: number }
-export interface InputPolygon { id: string; label: string; points: Point[]; holes?: Point[][]; color: string; quantity: number }
+export interface InputPolygon { id: string; label: string; points: Point[]; holes?: Point[][]; color: string; quantity: number; enabled?: boolean }
 export interface PlacedPart { id: string; label: string; points: Point[]; holes?: Point[][]; rotation: number; color: string }
 export interface NestResult {
   placed: PlacedPart[]
@@ -8,7 +8,7 @@ export interface NestResult {
   lossArea: number
   sheetsNeeded: number
 }
-export type LayoutMode = 'free' | 'same' | 'back-back' | 'chidori30' | 'chidori60'
+export type LayoutMode = 'free' | 'same' | 'back-back' | 'interlock' | 'square' | 'chidori30' | 'chidori60'
 export interface SheetConfig {
   width: number
   height: number

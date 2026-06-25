@@ -10,6 +10,7 @@
   "dependencies": {
     "dxf-parser": "^1.1.2",
     "next": "16.2.9",
+    "pdfjs-dist": "^6.0.227",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "svgson": "^5.3.1"

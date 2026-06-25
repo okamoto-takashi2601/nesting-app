@@ -9,6 +9,8 @@ import type { InputPolygon, NestResult, SheetConfig, LayoutMode, Point, PlacedPa
 
 const PALETTE = ['#4f8ef7', '#4fcf8e', '#f7c34f', '#f77f4f', '#cf4ff7', '#4ff7e8']
 
+const SHEET_STORAGE_KEY = 'nesting-sheet-config'
+
 function makeCirclePts(dia: number, seg = 64) {
   const r = dia / 2
   return Array.from({ length: seg }, (_, i) => {
@@ -66,6 +68,23 @@ export default function Page() {
   const t: TFunc = useMemo(() => makeTFunc(lang), [lang])
 
   useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SHEET_STORAGE_KEY)
+      if (saved) {
+        const p = JSON.parse(saved)
+        setSheetConfig(prev => ({
+          ...prev,
+          ...(typeof p.width === 'number' && { width: p.width }),
+          ...(typeof p.height === 'number' && { height: p.height }),
+          ...(typeof p.spacing === 'number' && { spacing: p.spacing }),
+          ...(typeof p.margin === 'number' && { margin: p.margin }),
+          ...(typeof p.layoutMode === 'string' && { layoutMode: p.layoutMode }),
+        }))
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
     if (!showLangMenu) return
     function handleClick(e: MouseEvent) {
       if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node))
@@ -76,11 +95,13 @@ export default function Page() {
   }, [showLangMenu])
 
   const layoutOptions = useMemo(() => [
-    { value: 'same'     , label: t('sameDirection'), desc: t('sameDirectionDesc') },
-    { value: 'back-back', label: t('backToBack'),    desc: t('backToBackDesc')    },
-    { value: 'chidori30', label: t('chidori30'),     desc: t('chidori30Desc')     },
-    { value: 'chidori60', label: t('chidori60'),     desc: t('chidori60Desc')     },
-    { value: 'free'     , label: t('freeRotation'),  desc: t('freeRotationDesc')  },
+    { value: 'same'     , label: t('sameDirection'), desc: t('sameDirectionDesc')  },
+    { value: 'back-back', label: t('backToBack'),    desc: t('backToBackDesc')     },
+    { value: 'interlock', label: t('interlockMode'), desc: t('interlockModeDesc')  },
+    { value: 'square'   , label: t('squareLayout'),  desc: t('squareLayoutDesc')   },
+    { value: 'chidori30', label: t('chidori30'),     desc: t('chidori30Desc')      },
+    { value: 'chidori60', label: t('chidori60'),     desc: t('chidori60Desc')      },
+    { value: 'free'     , label: t('freeRotation'),  desc: t('freeRotationDesc')   },
   ], [t])
 
   const [nestResult, setNestResult] = useState<NestResult | null>(null)
@@ -94,7 +115,7 @@ export default function Page() {
   const sheetFileInputRef = useRef<HTMLInputElement>(null)
 
   // Parts input mode
-  const [partsMode, setPartsMode] = useState<'quick' | 'import'>('quick')
+  const [partsMode, setPartsMode] = useState<'quick' | 'import'>('import')
 
   // Sheet shape import state
   const [sheetMode, setSheetMode] = useState<'import' | 'dimensions'>('dimensions')
@@ -138,7 +159,7 @@ export default function Page() {
   const handleFiles = useCallback(async (files: File[]) => {
     const valid = files.filter(f => {
       const n = f.name.toLowerCase()
-      return n.endsWith('.svg') || n.endsWith('.dxf') || n.endsWith('.igs') || n.endsWith('.iges') || f.type === 'image/svg+xml'
+      return n.endsWith('.svg') || n.endsWith('.dxf') || n.endsWith('.igs') || n.endsWith('.iges') || n.endsWith('.pdf') || f.type === 'image/svg+xml'
     })
     if (valid.length === 0) {
       setErrorMsg(t('errInvalidFile'))
@@ -246,11 +267,21 @@ export default function Page() {
 
   const handleNest = useCallback(() => {
     if (parts.length === 0 || !workerRef.current) return
+    try {
+      localStorage.setItem(SHEET_STORAGE_KEY, JSON.stringify({
+        width: sheetConfig.width,
+        height: sheetConfig.height,
+        spacing: sheetConfig.spacing,
+        margin: sheetConfig.margin,
+        layoutMode: sheetConfig.layoutMode,
+      }))
+    } catch {}
     setStatus('running')
     setNestResult(null)
     setProgress(null)
     const sheetArea = sheetConfig.width * sheetConfig.height
-    const expanded = parts.flatMap(p => {
+    const activeParts = parts.filter(p => p.enabled !== false)
+    const expanded = activeParts.flatMap(p => {
       const area = polygonArea(p.points)
       const maxQty = area > 0 ? Math.min(Math.ceil(sheetArea / area) + 5, 2000) : 200
       return Array.from({ length: maxQty }, (_, i) => ({ ...p, id: `${p.id}-${i}` }))
@@ -261,33 +292,11 @@ export default function Page() {
       obstacles: sheetObstacles.length > 0 ? sheetObstacles : undefined,
     }
     workerRef.current.postMessage({ polygons: expanded, sheetConfig: configWithShape })
-  }, [parts, sheetConfig])
+  }, [parts, sheetConfig, sheetBoundary, sheetObstacles])
 
 
   const selectedLayout = layoutOptions.find(o => o.value === sheetConfig.layoutMode)
 
-  const wasteInfo = useMemo(() => {
-    if (!nestResult || nestResult.placed.length === 0) return null
-    let x0 = sheetConfig.width, y0 = sheetConfig.height, x1 = 0, y1 = 0
-    for (const p of nestResult.placed)
-      for (const pt of p.points) {
-        if (pt.x < x0) x0 = pt.x; if (pt.y < y0) y0 = pt.y
-        if (pt.x > x1) x1 = pt.x; if (pt.y > y1) y1 = pt.y
-      }
-    return {
-      top:    +y0.toFixed(1),
-      bottom: +(sheetConfig.height - y1).toFixed(1),
-      left:   +x0.toFixed(1),
-      right:  +(sheetConfig.width - x1).toFixed(1),
-    }
-  }, [nestResult, sheetConfig])
-
-  const labelCounts = useMemo(() => {
-    if (!nestResult) return new Map<string, number>()
-    const m = new Map<string, number>()
-    for (const p of nestResult.placed) m.set(p.label, (m.get(p.label) ?? 0) + 1)
-    return m
-  }, [nestResult])
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -452,7 +461,7 @@ export default function Page() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".svg,.dxf,.igs,.iges,image/svg+xml"
+                accept=".svg,.dxf,.igs,.iges,.pdf,image/svg+xml"
                 multiple
                 className="hidden"
                 onChange={e => {
@@ -482,10 +491,17 @@ export default function Page() {
             </div>
             <div className="space-y-1 max-h-48 overflow-y-auto">
               {parts.map((part, idx) => {
+                const enabled = part.enabled !== false
                 const color = PALETTE[idx % PALETTE.length]
                 const area = Math.round(polygonArea(part.points))
                 return (
-                  <div key={part.id} className="flex items-center gap-2 bg-slate-800 rounded px-2 py-1.5">
+                  <div key={part.id} className={`flex items-center gap-2 bg-slate-800 rounded px-2 py-1.5 ${enabled ? '' : 'opacity-40'}`}>
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={e => setParts(prev => prev.map(p => p.id === part.id ? { ...p, enabled: e.target.checked } : p))}
+                      className="shrink-0 w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 accent-blue-500 cursor-pointer"
+                    />
                     <PartPreview points={part.points} holes={part.holes} color={color} />
                     <div className="flex-1 min-w-0">
                       <div className="text-xs text-slate-300 truncate">{part.label}</div>
@@ -661,7 +677,7 @@ export default function Page() {
         <div className="px-4 pb-4 flex gap-2">
           <button
             onClick={handleNest}
-            disabled={parts.length === 0 || status === 'running'}
+            disabled={parts.filter(p => p.enabled !== false).length === 0 || status === 'running'}
             className="flex-1 py-2 rounded bg-blue-950 hover:bg-blue-900 disabled:bg-slate-800 disabled:text-slate-600 text-blue-400 font-medium text-sm transition-colors border border-blue-500/20 disabled:border-transparent"
           >
             {status === 'running' ? t('running') : t('runNesting')}
@@ -677,59 +693,6 @@ export default function Page() {
         </div>
 
         {/* Result */}
-        {status === 'done' && nestResult && (
-          <div className="px-4 pb-4 space-y-1.5">
-            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{t('result')}</div>
-            <div className="bg-slate-800 rounded p-3 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-slate-400">{t('perSheet')}</span>
-                <span className="text-slate-200 font-semibold">{nestResult.placed.length} {t('pcs')}</span>
-              </div>
-              {labelCounts.size > 1 && (
-                <div className="border-t border-slate-700 pt-2 space-y-1">
-                  {Array.from(labelCounts.entries()).map(([label, count]) => (
-                    <div key={label} className="flex justify-between">
-                      <span className="text-slate-400">{label}</span>
-                      <span className="font-mono text-slate-200">{count} {t('pcs')}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">{t('utilization')}</span>
-                <span className={`font-semibold ${nestResult.efficiency >= 80 ? 'text-emerald-400' : nestResult.efficiency >= 60 ? 'text-yellow-400' : 'text-orange-400'}`}>
-                  {nestResult.efficiency}%
-                </span>
-              </div>
-              <div className="w-full bg-slate-950 rounded-full h-1">
-                <div className="h-1 rounded-full bg-blue-500 transition-all" style={{ width: `${nestResult.efficiency}%` }} />
-              </div>
-              {wasteInfo && (
-                <div className="border-t border-slate-700 pt-2 space-y-1">
-                  <div className="text-slate-500 mb-1">{t('wasteEachSide')}</div>
-                  {([
-                    { labelKey: 'top',    val: wasteInfo.top },
-                    { labelKey: 'bottom', val: wasteInfo.bottom },
-                    { labelKey: 'left',   val: wasteInfo.left },
-                    { labelKey: 'right',  val: wasteInfo.right },
-                  ]).map(({ labelKey, val }) => (
-                    <div key={labelKey} className="flex justify-between">
-                      <span className="text-slate-400">{t(labelKey)}</span>
-                      <span className={`font-mono ${val > 0 ? 'text-orange-400' : 'text-slate-600'}`}>
-                        {val} mm
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span className="text-slate-400">{t('lossArea')}</span>
-                <span className="text-slate-400">{(nestResult.lossArea / 100).toFixed(0)} cm²</span>
-              </div>
-            </div>
-          </div>
-        )}
-
         {status === 'error' && (
           <div className="px-4 pb-4">
             <div className="bg-red-950 border border-orange-500/30 rounded p-3 text-xs text-orange-400">

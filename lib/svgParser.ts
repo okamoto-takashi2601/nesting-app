@@ -507,14 +507,15 @@ export async function parseDXF(file: File): Promise<InputPolygon[]> {
   let colorIdx = 0
   const fileId = Math.random().toString(36).slice(2, 8)
 
-  // Collect LINE and ARC entities as open segments to chain into closed contours.
-  // Other entity types (LWPOLYLINE, CIRCLE, ELLIPSE, SPLINE) are already closed
-  // and get pushed as polygons directly.
+  // LINE + ARC open segments → chained into closed contours below.
+  // CIRCLE, LWPOLYLINE, ELLIPSE, SPLINE → directPolygons (already closed).
+  // Both pools are merged before containment detection so a CIRCLE inside a
+  // chained contour becomes a hole instead of a separate part.
   const allSegments: Segment[] = []
+  const directPolygons: Point[][] = []
 
   for (const entity of dxf?.entities ?? []) {
     if (entity.type === 'LINE') {
-      // dxf-parser exposes LINE as entity.start / entity.end (not entity.vertices)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const e = entity as any
       const sx = e.start?.x ?? e.vertices?.[0]?.x
@@ -535,15 +536,7 @@ export async function parseDXF(file: File): Promise<InputPolygon[]> {
       let sweep = endAngle - startAngle
       if (sweep < 0) sweep += 2 * Math.PI
       if (sweep >= Math.PI * 1.94) {
-        // Near-full circle → closed polygon
-        const rawPts = circleApprox(center.x, center.y, radius)
-        polygons.push({
-          id: `${fileId}-circ-${polygons.length}`,
-          label: `part-${polygons.length + 1}`,
-          points: normalizeToOrigin(rawPts),
-          color: COLORS[colorIdx++ % COLORS.length],
-          quantity: 1,
-        })
+        directPolygons.push(circleApprox(center.x, center.y, radius))
         continue
       }
       const n = Math.max(4, Math.ceil((sweep / (2 * Math.PI)) * 32))
@@ -556,38 +549,33 @@ export async function parseDXF(file: File): Promise<InputPolygon[]> {
       continue
     }
 
-    // LWPOLYLINE, POLYLINE, CIRCLE, ELLIPSE, SPLINE → already closed, push directly
+    // LWPOLYLINE, POLYLINE, CIRCLE, ELLIPSE, SPLINE → collect as direct closed shapes
     const rawPoints = dxfEntityToPoints(entity)
     if (!rawPoints || rawPoints.length < 3) continue
-    const handle = (entity as { handle?: string }).handle
-    polygons.push({
-      id: `${fileId}-${handle ?? polygons.length}-${polygons.length}`,
-      label: `part-${polygons.length + 1}`,
-      points: normalizeToOrigin(rawPoints),
-      color: COLORS[colorIdx++ % COLORS.length],
-      quantity: 1,
-    })
+    directPolygons.push(rawPoints)
   }
 
-  if (allSegments.length > 0) {
-    const chains = groupSegmentsToPolygons(allSegments, 0.5)
-    const outerChains = chains.filter((pts, i) =>
-      !chains.some((other, j) => j !== i && bboxContains(other, pts))
+  // Merge chained contours + direct closed shapes, then run unified containment detection.
+  const chains = allSegments.length > 0 ? groupSegmentsToPolygons(allSegments, 0.5) : []
+  const allRaw: Point[][] = [...chains, ...directPolygons]
+
+  if (allRaw.length > 0) {
+    const outerRaw = allRaw.filter((pts, i) =>
+      !allRaw.some((other, j) => j !== i && bboxContains(other, pts))
     )
-    const innerChains = chains.filter((pts, i) =>
-      chains.some((other, j) => j !== i && bboxContains(other, pts))
+    const innerRaw = allRaw.filter((pts, i) =>
+      allRaw.some((other, j) => j !== i && bboxContains(other, pts))
     )
-    for (const rawPts of outerChains) {
+    for (const rawPts of outerRaw) {
       if (rawPts.length < 3) continue
-      // Find the outer polygon's origin so holes share the same coordinate system
       let minX = rawPts[0].x, minY = rawPts[0].y
       for (const p of rawPts) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y }
       const pts = rawPts.map(p => ({ x: p.x - minX, y: p.y - minY }))
-      const holes = innerChains
+      const holes = innerRaw
         .filter(h => bboxContains(rawPts, h))
         .map(h => h.map(p => ({ x: p.x - minX, y: p.y - minY })))
       polygons.push({
-        id: `${fileId}-chain-${polygons.length}`,
+        id: `${fileId}-poly-${polygons.length}`,
         label: `part-${polygons.length + 1}`,
         points: pts,
         holes: holes.length > 0 ? holes : undefined,
@@ -752,6 +740,10 @@ export async function parseFile(file: File): Promise<InputPolygon[]> {
   const name = file.name.toLowerCase()
   if (name.endsWith('.dxf')) return parseDXF(file)
   if (name.endsWith('.igs') || name.endsWith('.iges')) return parseIGES(file)
+  if (name.endsWith('.pdf')) {
+    const { parsePDF } = await import('@/lib/pdfParser')
+    return parsePDF(file)
+  }
   return parseSVG(file)
 }
 
