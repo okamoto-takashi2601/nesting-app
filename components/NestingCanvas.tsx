@@ -1405,7 +1405,7 @@ export default function NestingCanvas({
 
         <div className="ml-auto flex items-center gap-2">
           {/* Export settings ⚙ */}
-          <div className="relative">
+          {result && <div className="relative">
             {showExportSettings && (
               <div
                 onClick={e => e.stopPropagation()}
@@ -1493,7 +1493,7 @@ export default function NestingCanvas({
             >
               ⚙
             </button>
-          </div>
+          </div>}
 
           {result && (
             <div className="relative">
