@@ -497,10 +497,10 @@ export default function NestingCanvas({
       if (wRgt > 1) { ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke() }
       ctx.setLineDash([])
       ctx.restore()
-      if (wTop > 1) drawDim(ctx, W, 0,  W, y0, `${wTop.toFixed(1)} mm`, s, -28)
-      if (wBot > 1) drawDim(ctx, W, y1, W, H,  `${wBot.toFixed(1)} mm`, s, -28)
-      if (wLft > 1) drawDim(ctx, 0,  H, x0, H, `${wLft.toFixed(1)} mm`, s, 28)
-      if (wRgt > 1) drawDim(ctx, x1, H, W,  H, `${wRgt.toFixed(1)} mm`, s, 28)
+      if (wTop > 1) drawDim(ctx, W, 0,  W, y0, `${wTop.toFixed(1)} mm`, s, -56)
+      if (wBot > 1) drawDim(ctx, W, y1, W, H,  `${wBot.toFixed(1)} mm`, s, -56)
+      if (wLft > 1) drawDim(ctx, 0,  H, x0, H, `${wLft.toFixed(1)} mm`, s, 56)
+      if (wRgt > 1) drawDim(ctx, x1, H, W,  H, `${wRgt.toFixed(1)} mm`, s, 56)
     }
 
     // ── Selected part dims (measurement mode) ──
@@ -907,32 +907,43 @@ export default function NestingCanvas({
     lines.push(dimLine(0, H + 24, W, H + 24, true))
     lines.push(dimText(W / 2, H + 24, `${W}`))
 
-    // === Height dims (left of sheet) ===
-    // Layout height at x = -10
-    lines.push(dimLine(0, lMinY, -13, lMinY))
-    lines.push(dimLine(0, lMaxY, -13, lMaxY))
-    lines.push(dimLine(-10, lMinY, -10, lMaxY, true))
-    lines.push(dimText(-10, (lMinY + lMaxY) / 2, `${lH.toFixed(1)}`, `rotate(-90 ${-10} ${(lMinY + lMaxY) / 2})`))
-    // Sheet height at x = -24
+    // === Height dims: Sheet LEFT, Layout RIGHT ===
+    // Sheet height at x = -24 (left)
     lines.push(dimLine(0, 0, -27, 0))
     lines.push(dimLine(0, H, -27, H))
     lines.push(dimLine(-24, 0, -24, H, true))
     lines.push(dimText(-24, H / 2, `${H}`, `rotate(-90 ${-24} ${H / 2})`))
+    // Layout height at x = W+10 (right — matches canvas)
+    lines.push(dimLine(W, lMinY, W + 13, lMinY))
+    lines.push(dimLine(W, lMaxY, W + 13, lMaxY))
+    lines.push(dimLine(W + 10, lMinY, W + 10, lMaxY, true))
+    lines.push(dimText(W + 10, (lMinY + lMaxY) / 2, `${lH.toFixed(1)}`, `rotate(90 ${W + 10} ${(lMinY + lMaxY) / 2})`))
 
-    // === Margin dims (inside sheet) ===
-    const midLX = (lMinX + lMaxX) / 2, midLY = (lMinY + lMaxY) / 2
-    // top margin
-    lines.push(dimLine(midLX, 0, midLX, lMinY, true))
-    lines.push(dimText(midLX, lMinY / 2, `${mTop.toFixed(1)}`))
-    // bottom margin
-    lines.push(dimLine(midLX, lMaxY, midLX, H, true))
-    lines.push(dimText(midLX, (lMaxY + H) / 2, `${mBot.toFixed(1)}`))
-    // left margin
-    lines.push(dimLine(0, midLY, lMinX, midLY, true))
-    lines.push(dimText(lMinX / 2, midLY, `${mLft.toFixed(1)}`))
-    // right margin
-    lines.push(dimLine(lMaxX, midLY, W, midLY, true))
-    lines.push(dimText((lMaxX + W) / 2, midLY, `${mRgt.toFixed(1)}`))
+    // === Margin dims: RIGHT side (wTop/wBot) and BELOW (wLft/wRgt) — matches canvas ===
+    if (mTop > 1) {
+      lines.push(dimLine(W, 0, W + 27, 0))
+      lines.push(dimLine(W, lMinY, W + 27, lMinY))
+      lines.push(dimLine(W + 24, 0, W + 24, lMinY, true))
+      lines.push(dimText(W + 24, lMinY / 2, `${mTop.toFixed(1)}`, `rotate(90 ${W + 24} ${lMinY / 2})`))
+    }
+    if (mBot > 1) {
+      lines.push(dimLine(W, lMaxY, W + 27, lMaxY))
+      lines.push(dimLine(W, H, W + 27, H))
+      lines.push(dimLine(W + 24, lMaxY, W + 24, H, true))
+      lines.push(dimText(W + 24, (lMaxY + H) / 2, `${mBot.toFixed(1)}`, `rotate(90 ${W + 24} ${(lMaxY + H) / 2})`))
+    }
+    if (mLft > 1) {
+      lines.push(dimLine(0, H, 0, H + 41))
+      lines.push(dimLine(lMinX, H, lMinX, H + 41))
+      lines.push(dimLine(0, H + 38, lMinX, H + 38, true))
+      lines.push(dimText(lMinX / 2, H + 38, `${mLft.toFixed(1)}`))
+    }
+    if (mRgt > 1) {
+      lines.push(dimLine(lMaxX, H, lMaxX, H + 41))
+      lines.push(dimLine(W, H, W, H + 41))
+      lines.push(dimLine(lMaxX, H + 38, W, H + 38, true))
+      lines.push(dimText((lMaxX + W) / 2, H + 38, `${mRgt.toFixed(1)}`))
+    }
 
     lines.push('</svg>')
     download(new Blob([lines.join('\n')], { type: 'image/svg+xml' }), `${baseName}_layout.svg`)
@@ -1013,32 +1024,43 @@ export default function NestingCanvas({
     addLine('DIM', 0, H+24, W, H+24, 'DASHED')
     addText('DIM', W/2, H+24, `${W}`)
 
-    // Height dims (left of sheet → negative X in DXF)
-    // Layout height at x = -10
-    addLine('DIM', 0, lMinY, -13, lMinY)
-    addLine('DIM', 0, lMaxY, -13, lMaxY)
-    addLine('DIM', -10, lMinY, -10, lMaxY, 'DASHED')
-    addText('DIM', -10, (lMinY+lMaxY)/2, `${lH.toFixed(1)}`, 90)
-    // Sheet height at x = -24
+    // Height dims: Sheet LEFT, Layout RIGHT (matches canvas)
+    // Sheet height at x = -24 (left)
     addLine('DIM', 0, 0, -27, 0)
     addLine('DIM', 0, H, -27, H)
     addLine('DIM', -24, 0, -24, H, 'DASHED')
     addText('DIM', -24, H/2, `${H}`, 90)
+    // Layout height at x = W+10 (right)
+    addLine('DIM', W, lMinY, W+13, lMinY)
+    addLine('DIM', W, lMaxY, W+13, lMaxY)
+    addLine('DIM', W+10, lMinY, W+10, lMaxY, 'DASHED')
+    addText('DIM', W+10, (lMinY+lMaxY)/2, `${lH.toFixed(1)}`, 90)
 
-    // Margin dims (inside sheet)
-    const midLX = (lMinX+lMaxX)/2, midLY = (lMinY+lMaxY)/2
-    // top
-    addLine('DIM', midLX, 0, midLX, lMinY, 'DASHED')
-    addText('DIM', midLX, lMinY/2, `${mTop.toFixed(1)}`)
-    // bottom
-    addLine('DIM', midLX, lMaxY, midLX, H, 'DASHED')
-    addText('DIM', midLX, (lMaxY+H)/2, `${mBot.toFixed(1)}`)
-    // left
-    addLine('DIM', 0, midLY, lMinX, midLY, 'DASHED')
-    addText('DIM', lMinX/2, midLY, `${mLft.toFixed(1)}`)
-    // right
-    addLine('DIM', lMaxX, midLY, W, midLY, 'DASHED')
-    addText('DIM', (lMaxX+W)/2, midLY, `${mRgt.toFixed(1)}`)
+    // Margin dims: RIGHT side (wTop/wBot) and BELOW (wLft/wRgt) — matches canvas
+    if (mTop > 1) {
+      addLine('DIM', W, 0, W+27, 0)
+      addLine('DIM', W, lMinY, W+27, lMinY)
+      addLine('DIM', W+24, 0, W+24, lMinY, 'DASHED')
+      addText('DIM', W+24, lMinY/2, `${mTop.toFixed(1)}`, 90)
+    }
+    if (mBot > 1) {
+      addLine('DIM', W, lMaxY, W+27, lMaxY)
+      addLine('DIM', W, H, W+27, H)
+      addLine('DIM', W+24, lMaxY, W+24, H, 'DASHED')
+      addText('DIM', W+24, (lMaxY+H)/2, `${mBot.toFixed(1)}`, 90)
+    }
+    if (mLft > 1) {
+      addLine('DIM', 0, H, 0, H+41)
+      addLine('DIM', lMinX, H, lMinX, H+41)
+      addLine('DIM', 0, H+38, lMinX, H+38, 'DASHED')
+      addText('DIM', lMinX/2, H+38, `${mLft.toFixed(1)}`)
+    }
+    if (mRgt > 1) {
+      addLine('DIM', lMaxX, H, lMaxX, H+41)
+      addLine('DIM', W, H, W, H+41)
+      addLine('DIM', lMaxX, H+38, W, H+38, 'DASHED')
+      addText('DIM', (lMaxX+W)/2, H+38, `${mRgt.toFixed(1)}`)
+    }
 
     add('0','ENDSEC','0','EOF')
     download(new Blob([L.join('\r\n')], { type: 'application/octet-stream' }), `${baseName}_layout.dxf`)
