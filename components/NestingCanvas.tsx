@@ -176,12 +176,12 @@ function drawDim(
   ctx.fillStyle = '#64748b'
   ctx.font = `${fs}px Inter, sans-serif`
   ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
+  ctx.textBaseline = 'bottom'
   ctx.save()
   ctx.translate(mx, my)
   const angle = Math.atan2(dy, dx)
   ctx.rotate(Math.abs(angle) <= Math.PI / 2 ? angle : angle - Math.PI)
-  ctx.fillText(label, 0, -4.5 / scale)
+  ctx.fillText(label, 0, -3 / scale)
   ctx.restore()
   ctx.restore()
 }
@@ -439,8 +439,8 @@ export default function NestingCanvas({
       }
       const lW = +(lMaxX - lMinX).toFixed(1)
       const lH = +(lMaxY - lMinY).toFixed(1)
-      drawDim(ctx, lMinX, lMaxY, lMaxX, lMaxY, `${lW} mm`, s, 28)
-      drawDim(ctx, lMaxX, lMinY, lMaxX, lMaxY, `${lH} mm`, s, -28)
+      drawDim(ctx, lMinX, H, lMaxX, H, `${lW} mm`, s, 28)
+      drawDim(ctx, W, lMinY, W, lMaxY, `${lH} mm`, s, -28)
     }
 
     // ── Parts ──
@@ -847,7 +847,23 @@ export default function NestingCanvas({
   function exportSVG() {
     if (!result) return
     const W = sheetConfig.width, H = sheetConfig.height
-    const pad = 20
+    const pad = 50
+
+    // Layout bounding box
+    let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity
+    for (const p of result.placed)
+      for (const pt of p.points) {
+        if (pt.x < lMinX) lMinX = pt.x; if (pt.y < lMinY) lMinY = pt.y
+        if (pt.x > lMaxX) lMaxX = pt.x; if (pt.y > lMaxY) lMaxY = pt.y
+      }
+    const lW = lMaxX - lMinX, lH = lMaxY - lMinY
+    const mTop = lMinY, mBot = H - lMaxY, mLft = lMinX, mRgt = W - lMaxX
+
+    // Filename from most common label
+    const cnt = new Map<string, number>()
+    for (const p of result.placed) cnt.set(p.label, (cnt.get(p.label) ?? 0) + 1)
+    const baseName = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'nesting'
+
     const lines = [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${W + pad * 2}" height="${H + pad * 2}" viewBox="${-pad} ${-pad} ${W + pad * 2} ${H + pad * 2}">`,
       `<rect width="${W}" height="${H}" fill="#fff"/>`,
@@ -861,31 +877,65 @@ export default function NestingCanvas({
       lines.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#333" stroke-width="1"/>`)
     }
 
-    // Parts with holes (evenodd fill rule cuts out holes)
+    // Layout bounding box
+    lines.push(`<rect x="${lMinX.toFixed(2)}" y="${lMinY.toFixed(2)}" width="${lW.toFixed(2)}" height="${lH.toFixed(2)}" fill="none" stroke="#aaa" stroke-width="0.5" stroke-dasharray="2,2"/>`)
+
+    // Parts with holes
     for (const part of result.placed) {
       const color = labelColors.get(part.label) ?? '#4f8ef7'
       let d = part.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-      if (part.holes) {
-        for (const hole of part.holes) {
+      if (part.holes)
+        for (const hole of part.holes)
           d += ' ' + hole.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ') + ' Z'
-        }
-      }
       lines.push(`<path fill-rule="evenodd" d="${d}" fill="${color}30" stroke="${color}" stroke-width="0.8"/>`)
     }
 
-    // Width dimension line (below sheet) — dashed, text centered on line
-    lines.push(`<line x1="0" y1="${H + 8}" x2="${W}" y2="${H + 8}" stroke="#888" stroke-width="0.6" stroke-dasharray="3,2"/>`)
-    lines.push(`<line x1="0" y1="${H}" x2="0" y2="${H + 11}" stroke="#888" stroke-width="0.6"/>`)
-    lines.push(`<line x1="${W}" y1="${H}" x2="${W}" y2="${H + 11}" stroke="#888" stroke-width="0.6"/>`)
-    lines.push(`<text x="${W / 2}" y="${H + 8}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="8" fill="#888" stroke="white" stroke-width="2.5" paint-order="stroke" stroke-linejoin="round">${W} mm</text>`)
-    // Height dimension line (left of sheet) — dashed, text centered on line
-    lines.push(`<line x1="-8" y1="0" x2="-8" y2="${H}" stroke="#888" stroke-width="0.6" stroke-dasharray="3,2"/>`)
-    lines.push(`<line x1="-11" y1="0" x2="0" y2="0" stroke="#888" stroke-width="0.6"/>`)
-    lines.push(`<line x1="-11" y1="${H}" x2="0" y2="${H}" stroke="#888" stroke-width="0.6"/>`)
-    lines.push(`<text x="${-8}" y="${H / 2}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="8" fill="#888" stroke="white" stroke-width="2.5" paint-order="stroke" stroke-linejoin="round" transform="rotate(-90 ${-8} ${H / 2})">${H} mm</text>`)
+    const dimText = (x: number, y: number, txt: string, rotate?: string) =>
+      `<text x="${x}" y="${y}" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="7" fill="#888" stroke="white" stroke-width="2" paint-order="stroke" stroke-linejoin="round"${rotate ? ` transform="${rotate}"` : ''}>${txt}</text>`
+    const dimLine = (x1: number, y1: number, x2: number, y2: number, dashed?: boolean) =>
+      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#888" stroke-width="0.5"${dashed ? ' stroke-dasharray="3,2"' : ''}/>`
+
+    // === Width dims (below sheet) ===
+    // Layout width at y = H+10
+    lines.push(dimLine(lMinX, H, lMinX, H + 13))
+    lines.push(dimLine(lMaxX, H, lMaxX, H + 13))
+    lines.push(dimLine(lMinX, H + 10, lMaxX, H + 10, true))
+    lines.push(dimText((lMinX + lMaxX) / 2, H + 10, `${lW.toFixed(1)}`))
+    // Sheet width at y = H+24
+    lines.push(dimLine(0, H, 0, H + 27))
+    lines.push(dimLine(W, H, W, H + 27))
+    lines.push(dimLine(0, H + 24, W, H + 24, true))
+    lines.push(dimText(W / 2, H + 24, `${W}`))
+
+    // === Height dims (left of sheet) ===
+    // Layout height at x = -10
+    lines.push(dimLine(0, lMinY, -13, lMinY))
+    lines.push(dimLine(0, lMaxY, -13, lMaxY))
+    lines.push(dimLine(-10, lMinY, -10, lMaxY, true))
+    lines.push(dimText(-10, (lMinY + lMaxY) / 2, `${lH.toFixed(1)}`, `rotate(-90 ${-10} ${(lMinY + lMaxY) / 2})`))
+    // Sheet height at x = -24
+    lines.push(dimLine(0, 0, -27, 0))
+    lines.push(dimLine(0, H, -27, H))
+    lines.push(dimLine(-24, 0, -24, H, true))
+    lines.push(dimText(-24, H / 2, `${H}`, `rotate(-90 ${-24} ${H / 2})`))
+
+    // === Margin dims (inside sheet) ===
+    const midLX = (lMinX + lMaxX) / 2, midLY = (lMinY + lMaxY) / 2
+    // top margin
+    lines.push(dimLine(midLX, 0, midLX, lMinY, true))
+    lines.push(dimText(midLX, lMinY / 2, `${mTop.toFixed(1)}`))
+    // bottom margin
+    lines.push(dimLine(midLX, lMaxY, midLX, H, true))
+    lines.push(dimText(midLX, (lMaxY + H) / 2, `${mBot.toFixed(1)}`))
+    // left margin
+    lines.push(dimLine(0, midLY, lMinX, midLY, true))
+    lines.push(dimText(lMinX / 2, midLY, `${mLft.toFixed(1)}`))
+    // right margin
+    lines.push(dimLine(lMaxX, midLY, W, midLY, true))
+    lines.push(dimText((lMaxX + W) / 2, midLY, `${mRgt.toFixed(1)}`))
 
     lines.push('</svg>')
-    download(new Blob([lines.join('\n')], { type: 'image/svg+xml' }), 'nesting-layout.svg')
+    download(new Blob([lines.join('\n')], { type: 'image/svg+xml' }), `${baseName}_layout.svg`)
   }
 
   function exportDXF() {
@@ -893,17 +943,33 @@ export default function NestingCanvas({
     const W = sheetConfig.width, H = sheetConfig.height
     const L: string[] = []
     const add = (...a: (string | number)[]) => a.forEach(v => L.push(String(v)))
-    // DXF uses Y-up; SVG uses Y-down → flip: y_dxf = H - y_svg
     const fx = (x: number) => x.toFixed(4)
     const fy = (y: number) => (H - y).toFixed(4)
     const addLine = (layer: string, x1: number, y1: number, x2: number, y2: number, ltype?: string) => {
       if (ltype) add('0','LINE','8',layer,'6',ltype,'10',fx(x1),'20',fy(y1),'30','0.0000','11',fx(x2),'21',fy(y2),'31','0.0000')
       else        add('0','LINE','8',layer,        '10',fx(x1),'20',fy(y1),'30','0.0000','11',fx(x2),'21',fy(y2),'31','0.0000')
     }
+    const addText = (layer: string, x: number, y: number, txt: string, rot?: number) => {
+      if (rot !== undefined)
+        add('0','TEXT','8',layer,'10',fx(x),'20',fy(y),'30','0.0000','40','4','1',txt,'50',rot,'72','4','11',fx(x),'21',fy(y),'31','0.0000')
+      else
+        add('0','TEXT','8',layer,'10',fx(x),'20',fy(y),'30','0.0000','40','4','1',txt,'72','4','11',fx(x),'21',fy(y),'31','0.0000')
+    }
 
-    // HEADER
+    // Layout bounding box
+    let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity
+    for (const p of result.placed)
+      for (const pt of p.points) {
+        if (pt.x < lMinX) lMinX = pt.x; if (pt.y < lMinY) lMinY = pt.y
+        if (pt.x > lMaxX) lMaxX = pt.x; if (pt.y > lMaxY) lMaxY = pt.y
+      }
+    const lW = lMaxX - lMinX, lH = lMaxY - lMinY
+    const mTop = lMinY, mBot = H - lMaxY, mLft = lMinX, mRgt = W - lMaxX
+    const cnt = new Map<string, number>()
+    for (const p of result.placed) cnt.set(p.label, (cnt.get(p.label) ?? 0) + 1)
+    const baseName = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'nesting'
+
     add('0','SECTION','2','HEADER','9','$ACADVER','1','AC1009','0','ENDSEC')
-    // TABLES — define DASHED linetype
     add('0','SECTION','2','TABLES',
       '0','TABLE','2','LTYPE','70','2',
       '0','LTYPE','2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
@@ -911,7 +977,7 @@ export default function NestingCanvas({
       '0','ENDTAB','0','ENDSEC')
     add('0','SECTION','2','ENTITIES')
 
-    // Sheet border (layer BORDER)
+    // Sheet border
     const borderPts = boundary && boundary.length >= 3
       ? boundary
       : [{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}]
@@ -920,51 +986,84 @@ export default function NestingCanvas({
       addLine('BORDER', p1.x, p1.y, p2.x, p2.y)
     }
 
+    // Layout bounding box
+    addLine('LAYOUT', lMinX, lMinY, lMaxX, lMinY, 'DASHED')
+    addLine('LAYOUT', lMaxX, lMinY, lMaxX, lMaxY, 'DASHED')
+    addLine('LAYOUT', lMaxX, lMaxY, lMinX, lMaxY, 'DASHED')
+    addLine('LAYOUT', lMinX, lMaxY, lMinX, lMinY, 'DASHED')
+
     // Parts: outer boundary + holes on same layer 0
     for (const part of result.placed) {
       const pts = part.points
-      for (let i = 0; i < pts.length; i++) {
-        const p1 = pts[i], p2 = pts[(i + 1) % pts.length]
-        addLine('0', p1.x, p1.y, p2.x, p2.y)
-      }
-      if (part.holes) {
-        for (const hole of part.holes) {
-          for (let i = 0; i < hole.length; i++) {
-            const p1 = hole[i], p2 = hole[(i + 1) % hole.length]
-            addLine('0', p1.x, p1.y, p2.x, p2.y)
-          }
-        }
-      }
+      for (let i = 0; i < pts.length; i++) addLine('0', pts[i].x, pts[i].y, pts[(i+1)%pts.length].x, pts[(i+1)%pts.length].y)
+      if (part.holes)
+        for (const hole of part.holes)
+          for (let i = 0; i < hole.length; i++) addLine('0', hole[i].x, hole[i].y, hole[(i+1)%hole.length].x, hole[(i+1)%hole.length].y)
     }
 
-    // Dimension lines (layer DIM, main lines DASHED, ticks CONTINUOUS)
-    // Width dim: below sheet in SVG = below origin in DXF (y < 0)
-    addLine('DIM',  0,  H+8, W, H+8, 'DASHED')   // main line
-    addLine('DIM',  0,  H,   0, H+11)             // left tick
-    addLine('DIM',  W,  H,   W, H+11)             // right tick
-    // text: 72=4 (MIDDLE = center H+V), group order: 10,20,30 → 40 → 1 → 72 → 11,21,31
-    add('0','TEXT','8','DIM','10',fx(W/2),'20',fy(H+8),'30','0.0000','40','5','1',`${W} mm`,'72','4','11',fx(W/2),'21',fy(H+8),'31','0.0000')
-    // Height dim: left of sheet (x < 0)
-    addLine('DIM', -8,  0,  -8,  H, 'DASHED')    // main line
-    addLine('DIM', -11, 0,   0,  0)              // bottom tick
-    addLine('DIM', -11, H,   0,  H)              // top tick
-    // text rotated 90°, 72=4 (MIDDLE)
-    add('0','TEXT','8','DIM','10',fx(-8),'20',fy(H/2),'30','0.0000','40','5','50','90','1',`${H} mm`,'72','4','11',fx(-8),'21',fy(H/2),'31','0.0000')
+    // Width dims (below sheet in SVG → negative Y in DXF Y-up)
+    // Layout width at svg y = H+10
+    addLine('DIM', lMinX, H, lMinX, H+13)
+    addLine('DIM', lMaxX, H, lMaxX, H+13)
+    addLine('DIM', lMinX, H+10, lMaxX, H+10, 'DASHED')
+    addText('DIM', (lMinX+lMaxX)/2, H+10, `${lW.toFixed(1)}`)
+    // Sheet width at svg y = H+24
+    addLine('DIM', 0, H, 0, H+27)
+    addLine('DIM', W, H, W, H+27)
+    addLine('DIM', 0, H+24, W, H+24, 'DASHED')
+    addText('DIM', W/2, H+24, `${W}`)
+
+    // Height dims (left of sheet → negative X in DXF)
+    // Layout height at x = -10
+    addLine('DIM', 0, lMinY, -13, lMinY)
+    addLine('DIM', 0, lMaxY, -13, lMaxY)
+    addLine('DIM', -10, lMinY, -10, lMaxY, 'DASHED')
+    addText('DIM', -10, (lMinY+lMaxY)/2, `${lH.toFixed(1)}`, 90)
+    // Sheet height at x = -24
+    addLine('DIM', 0, 0, -27, 0)
+    addLine('DIM', 0, H, -27, H)
+    addLine('DIM', -24, 0, -24, H, 'DASHED')
+    addText('DIM', -24, H/2, `${H}`, 90)
+
+    // Margin dims (inside sheet)
+    const midLX = (lMinX+lMaxX)/2, midLY = (lMinY+lMaxY)/2
+    // top
+    addLine('DIM', midLX, 0, midLX, lMinY, 'DASHED')
+    addText('DIM', midLX, lMinY/2, `${mTop.toFixed(1)}`)
+    // bottom
+    addLine('DIM', midLX, lMaxY, midLX, H, 'DASHED')
+    addText('DIM', midLX, (lMaxY+H)/2, `${mBot.toFixed(1)}`)
+    // left
+    addLine('DIM', 0, midLY, lMinX, midLY, 'DASHED')
+    addText('DIM', lMinX/2, midLY, `${mLft.toFixed(1)}`)
+    // right
+    addLine('DIM', lMaxX, midLY, W, midLY, 'DASHED')
+    addText('DIM', (lMaxX+W)/2, midLY, `${mRgt.toFixed(1)}`)
 
     add('0','ENDSEC','0','EOF')
-    download(new Blob([L.join('\r\n')], { type: 'application/octet-stream' }), 'nesting-layout.dxf')
+    download(new Blob([L.join('\r\n')], { type: 'application/octet-stream' }), `${baseName}_layout.dxf`)
   }
 
   function exportIGES() {
     if (!result) return
     const W = sheetConfig.width, H = sheetConfig.height
-    // IGES uses Y-up; SVG uses Y-down → flip: y_iges = H - y_svg
     const flipY = (y: number) => H - y
     const f8 = (v: string | number) => String(v).padStart(8, ' ')
     const row = (d: string, s: string, n: number) => (d + ' '.repeat(72)).slice(0, 72) + s + String(n).padStart(7, ' ')
     const segPairs: [Point, Point][] = []
     const addSeg = (ax: number, ay: number, bx: number, by: number) =>
       segPairs.push([{x: ax, y: flipY(ay)}, {x: bx, y: flipY(by)}])
+
+    // Layout bounding box
+    let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity
+    for (const p of result.placed)
+      for (const pt of p.points) {
+        if (pt.x < lMinX) lMinX = pt.x; if (pt.y < lMinY) lMinY = pt.y
+        if (pt.x > lMaxX) lMaxX = pt.x; if (pt.y > lMaxY) lMaxY = pt.y
+      }
+    const cnt = new Map<string, number>()
+    for (const p of result.placed) cnt.set(p.label, (cnt.get(p.label) ?? 0) + 1)
+    const baseName = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'nesting'
 
     // Sheet border
     const borderPts = boundary && boundary.length >= 3
@@ -975,23 +1074,44 @@ export default function NestingCanvas({
       addSeg(p1.x, p1.y, p2.x, p2.y)
     }
 
+    // Layout bbox
+    addSeg(lMinX, lMinY, lMaxX, lMinY)
+    addSeg(lMaxX, lMinY, lMaxX, lMaxY)
+    addSeg(lMaxX, lMaxY, lMinX, lMaxY)
+    addSeg(lMinX, lMaxY, lMinX, lMinY)
+
     // Parts: outer boundary + holes
     for (const p of result.placed) {
       for (let i = 0; i < p.points.length; i++) {
         const a = p.points[i], b = p.points[(i + 1) % p.points.length]
         addSeg(a.x, a.y, b.x, b.y)
       }
-      if (p.holes) {
-        for (const hole of p.holes) {
+      if (p.holes)
+        for (const hole of p.holes)
           for (let i = 0; i < hole.length; i++) {
             const a = hole[i], b = hole[(i + 1) % hole.length]
             addSeg(a.x, a.y, b.x, b.y)
           }
-        }
-      }
     }
 
-    const sL = [row('nesting-layout.igs', 'S', 1)]
+    // Dimension lines (as line segments)
+    const midLX = (lMinX+lMaxX)/2, midLY = (lMinY+lMaxY)/2
+    // Width layout dim
+    addSeg(lMinX, H+10, lMaxX, H+10)
+    // Width sheet dim
+    addSeg(0, H+24, W, H+24)
+    // Height layout dim
+    addSeg(-10, lMinY, -10, lMaxY)
+    // Height sheet dim
+    addSeg(-24, 0, -24, H)
+    // Margin dims
+    addSeg(midLX, 0, midLX, lMinY)
+    addSeg(midLX, lMaxY, midLX, H)
+    addSeg(0, midLY, lMinX, midLY)
+    addSeg(lMaxX, midLY, W, midLY)
+
+    const fileName = `${baseName}_layout.igs`
+    const sL = [row(fileName, 'S', 1)]
     const gStr = '1H,,1H;,4Hnest,4Hnest,4HNEST,4HNEST,16,38,6,308,15,4HNEST,1.0,2,2HMM,1,0.001,15H               ,0.001,1.0;'
     const gL: string[] = []
     for (let p = 0, gi = 1; p < gStr.length; p += 72, gi++) gL.push(row(gStr.slice(p, p + 72), 'G', gi))
@@ -1005,7 +1125,7 @@ export default function NestingCanvas({
       dS += 2; pS++
     }
     const tL = row('S'+String(sL.length).padStart(7)+'G'+String(gL.length).padStart(7)+'D'+String(dL.length).padStart(7)+'P'+String(pL.length).padStart(7),'T',1)
-    download(new Blob([[...sL,...gL,...dL,...pL,tL].join('\r\n')+'\r\n'],{type:'application/octet-stream'}),'nesting-layout.igs')
+    download(new Blob([[...sL,...gL,...dL,...pL,tL].join('\r\n')+'\r\n'],{type:'application/octet-stream'}), fileName)
   }
 
   const sheetCx = viewOffset.x + (sheetConfig.width * viewScale) / 2
