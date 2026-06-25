@@ -63,7 +63,7 @@ function computeEdgeStraight(pts) {
     vertexHard[i] = (cross / (lenA * lenB)) >= 0.5;
   }
 
-  // Step 4: edge is straight only if not a chamfer AND both endpoints are hard corners.
+  // Step 4: edge is flush-eligible only if not a chamfer AND both endpoints are hard corners (sin >= 0.5).
   var edgeStr = new Array(n);
   for (var i = 0; i < n; i++) {
     edgeStr[i] = !isChamfer[i] && vertexHard[i] && vertexHard[(i + 1) % n];
@@ -597,34 +597,45 @@ function pickSameRotation(sortedPolygons, candidateRots, sw, sh, spacing, margin
   return bestRot;
 }
 
-// Back-to-back rotation picker: tries all candidate rotations and scores by total pieces placed.
-// Strongly prefers rotations that put a straight edge on the RIGHT face (for flush horizontal pairing).
+// Back-to-back rotation picker.
+// Priority: find a flush-eligible edge, compute exact rotation that puts it on the right face,
+// then pick the best among those exact rotations (by piece count).
+// Falls back to COARSE_ROTS scoring only when no flush-eligible edges exist.
 function pickBackBackRotation(sortedPolygons, candidateRots, sw, sh, spacing, margin) {
   var MARGIN = typeof margin === 'number' ? margin : 5;
   var tol = 0.001;
-  var bestRot = candidateRots[0];
-  var bestScore = -1;
   var poly0 = sortedPolygons[0];
+  var pts0 = poly0.points, es0 = poly0.edgeStr, n0 = pts0.length;
 
-  for (var ri = 0; ri < candidateRots.length; ri++) {
-    var rot0 = candidateRots[ri];
+  // Compute exact rotations from flush-eligible edges.
+  // For edge i with direction (dx, dy), atan2(dx, dy) rotates that vector to point straight down (+y).
+  // After rotation the edge becomes vertical and lands on the right face (maxX) for a CW-screen polygon.
+  var exactRots = [];
+  for (var ei = 0; ei < n0; ei++) {
+    if (!es0[ei]) continue;
+    var ej = (ei + 1) % n0;
+    var edx = pts0[ej].x - pts0[ei].x, edy = pts0[ej].y - pts0[ei].y;
+    var deg = ((Math.atan2(edx, edy) * 180 / Math.PI) % 360 + 360) % 360;
+    exactRots.push(+deg.toFixed(2));
+    exactRots.push(+((deg + 180) % 360).toFixed(2));
+  }
+
+  var candidates = exactRots.length > 0 ? exactRots : candidateRots;
+
+  function score(rot0) {
     var rot1 = (rot0 + 180) % 360;
-
     var p0 = rot0 !== 0 ? rotatePoints(poly0.points, rot0) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
     var b0 = getBounds(p0); p0 = translate(p0, -b0.minX, -b0.minY);
     var w0 = getBounds(p0).maxX, h0 = getBounds(p0).maxY;
-    if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) continue;
-
+    if (w0 > sw - 2 * MARGIN + tol || h0 > sh - 2 * MARGIN + tol) return -1;
     var p1 = rot1 !== 0 ? rotatePoints(poly0.points, rot1) : poly0.points.map(function(p) { return { x: p.x, y: p.y }; });
     var b1 = getBounds(p1); p1 = translate(p1, -b1.minX, -b1.minY);
     var w1 = getBounds(p1).maxX, h1 = getBounds(p1).maxY;
-
     var es = poly0.edgeStr;
     var gapR0R1 = (hasStraightOnFace(p0, es, 'right') && hasStraightOnFace(p1, es, 'left'))  ? 0 : spacing;
     var gapR1R0 = (hasStraightOnFace(p1, es, 'right') && hasStraightOnFace(p0, es, 'left'))  ? 0 : spacing;
     var gap_y   = (hasStraightOnFace(p0, es, 'top')   && hasStraightOnFace(p0, es, 'bottom')) ? 0 : spacing;
     var rowH    = Math.max(h0, h1);
-
     var perRow = 0, cx = MARGIN, si = 0;
     while (true) {
       var cw = (si % 2 === 0) ? w0 : w1;
@@ -633,15 +644,17 @@ function pickBackBackRotation(sortedPolygons, candidateRots, sw, sh, spacing, ma
       cx += cw + ((si % 2 === 0) ? gapR0R1 : gapR1R0);
       si++;
     }
-    if (perRow < 1) continue;
-
+    if (perRow < 1) return -1;
     var rows = 0, cy = MARGIN;
     while (cy + rowH + MARGIN <= sh + tol) { rows++; cy += rowH + gap_y; }
-    if (rows < 1) continue;
+    if (rows < 1) return -1;
+    return perRow * rows;
+  }
 
-    var bonus = (hasStraightOnFace(p0, es, 'right') ? 10000 : 0) + (gapR0R1 === 0 ? 1000 : 0) + (gap_y === 0 ? 100 : 0);
-    var score  = perRow * rows * 100000 + bonus;
-    if (score > bestScore) { bestScore = score; bestRot = rot0; }
+  var bestRot = candidates[0], bestScore = -1;
+  for (var ri = 0; ri < candidates.length; ri++) {
+    var s = score(candidates[ri]);
+    if (s > bestScore) { bestScore = s; bestRot = candidates[ri]; }
   }
   return bestRot;
 }
