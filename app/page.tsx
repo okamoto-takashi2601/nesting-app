@@ -115,6 +115,8 @@ export default function Page() {
   const lockedPartsRef = useRef<PlacedPart[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sheetFileInputRef = useRef<HTMLInputElement>(null)
+  const layoutHelpRef = useRef<HTMLSpanElement>(null)
+  const [layoutTooltipPos, setLayoutTooltipPos] = useState<{ x: number; y: number } | null>(null)
 
   // Parts input mode
   const [partsMode, setPartsMode] = useState<'quick' | 'import'>('import')
@@ -139,6 +141,14 @@ export default function Page() {
       setEditMode(false)
     }
   }, [nestResult])
+
+  const activePartsCount = useMemo(() => parts.filter(p => p.enabled !== false).length, [parts])
+
+  useEffect(() => {
+    if (activePartsCount > 1) {
+      setSheetConfig(p => p.layoutMode === 'free' ? p : { ...p, layoutMode: 'free' })
+    }
+  }, [activePartsCount])
 
   useEffect(() => {
     workerRef.current = new Worker('/workers/nesting.worker.js')
@@ -293,18 +303,33 @@ export default function Page() {
     setProgress(null)
     const sheetArea = sheetConfig.width * sheetConfig.height
     const activeParts = parts.filter(p => p.enabled !== false)
-    const expanded = activeParts.flatMap(p => {
-      const area = polygonArea(p.points)
-      const maxQty = area > 0 ? Math.min(Math.ceil(sheetArea / area) + 5, 2000) : 200
-      return Array.from({ length: maxQty }, (_, i) => ({ ...p, id: `${p.id}-${i}` }))
-    })
+    let expanded: InputPolygon[]
+    let setSize = 0
+    const useSetMode = activeParts.some(p => (p.quantity || 1) > 1)
+    if (useSetMode) {
+      const setTemplate = activeParts.flatMap(p =>
+        Array.from({ length: Math.max(1, p.quantity || 1) }, () => p)
+      )
+      setSize = setTemplate.length
+      const totalSetArea = setTemplate.reduce((sum, p) => sum + polygonArea(p.points), 0)
+      const setsK = totalSetArea > 0 ? Math.min(Math.ceil(sheetArea / totalSetArea) + 5, 500) : 10
+      expanded = Array.from({ length: setsK }, (_, setIdx) =>
+        setTemplate.map((p, pos) => ({ ...p, id: `${p.id}-s${setIdx}-${pos}` }))
+      ).flat()
+    } else {
+      expanded = activeParts.flatMap(p => {
+        const area = polygonArea(p.points)
+        const maxQty = area > 0 ? Math.min(Math.ceil(sheetArea / area) + 5, 2000) : 200
+        return Array.from({ length: maxQty }, (_, i) => ({ ...p, id: `${p.id}-${i}` }))
+      })
+    }
     const configWithShape: SheetConfig = {
       ...sheetConfig,
       boundary: sheetBoundary ?? undefined,
       obstacles: sheetObstacles.length > 0 ? sheetObstacles : undefined,
     }
-    workerRef.current.postMessage({ polygons: expanded, sheetConfig: configWithShape })
-  }, [parts, sheetConfig, sheetBoundary, sheetObstacles])
+    workerRef.current.postMessage({ polygons: expanded, sheetConfig: configWithShape, setSize })
+  }, [parts, activePartsCount, sheetConfig, sheetBoundary, sheetObstacles])
 
   const handleReNest = useCallback(() => {
     if (!workerRef.current || editablePlaced.length === 0) return
@@ -334,9 +359,6 @@ export default function Page() {
       lockedParts: locked,
     })
   }, [editablePlaced, sheetConfig, sheetBoundary, sheetObstacles])
-
-  const selectedLayout = layoutOptions.find(o => o.value === sheetConfig.layoutMode)
-
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -560,6 +582,24 @@ export default function Page() {
                       <div className="text-xs text-slate-300 truncate">{part.label}</div>
                       <div className="text-[10px] text-slate-500">{area.toLocaleString()} mm²</div>
                     </div>
+                    <div className="relative group shrink-0">
+                      <div className="flex items-center gap-0.5">
+                        <span className="text-[10px] text-slate-500">×</span>
+                        <input
+                          type="number" min="1" max="99"
+                          value={part.quantity}
+                          onChange={e => setParts(prev => prev.map(p =>
+                            p.id === part.id ? { ...p, quantity: Math.max(1, parseInt(e.target.value) || 1) } : p
+                          ))}
+                          className="w-8 bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200 text-center focus:outline-none focus:border-blue-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                      </div>
+                      <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block z-50 pointer-events-none">
+                        <div className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-300 whitespace-nowrap shadow-xl">
+                          {t('pcsPerSet')}
+                        </div>
+                      </div>
+                    </div>
                     <button
                       onClick={() => setParts(prev => prev.filter(p => p.id !== part.id))}
                       className="text-slate-600 hover:text-red-400 transition-colors text-xs"
@@ -710,8 +750,20 @@ export default function Page() {
             </div>
           </div>
 
+          {activePartsCount <= 1 && (
           <div>
-            <label className="text-[11px] text-slate-400 block mb-1">{t('layoutMode')}</label>
+            <div className="flex items-center gap-1 mb-1">
+              <label className="text-[11px] text-slate-400">{t('layoutMode')}</label>
+              <span
+                ref={layoutHelpRef}
+                className="w-3.5 h-3.5 rounded-full bg-slate-700 text-slate-500 text-[9px] flex items-center justify-center cursor-default select-none"
+                onMouseEnter={() => {
+                  const r = layoutHelpRef.current?.getBoundingClientRect()
+                  if (r) setLayoutTooltipPos({ x: r.left, y: r.top })
+                }}
+                onMouseLeave={() => setLayoutTooltipPos(null)}
+              >?</span>
+            </div>
             <select
               value={sheetConfig.layoutMode}
               onChange={e => setSheetConfig(p => ({ ...p, layoutMode: e.target.value as LayoutMode }))}
@@ -721,10 +773,8 @@ export default function Page() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
-            {selectedLayout && (
-              <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">{selectedLayout.desc}</p>
-            )}
           </div>
+          )}
         </div>
 
         {/* Run / Cancel buttons */}
@@ -786,6 +836,22 @@ export default function Page() {
           t={t}
         />
       </div>
+
+      {layoutTooltipPos && (
+        <div
+          className="fixed z-50 pointer-events-none w-56"
+          style={{ left: layoutTooltipPos.x, bottom: window.innerHeight - layoutTooltipPos.y + 8 }}
+        >
+          <div className="bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 shadow-xl">
+            {layoutOptions.map(opt => (
+              <div key={opt.value} className="mb-1.5 last:mb-0">
+                <div className="text-[10px] font-medium text-slate-300">{opt.label}</div>
+                <div className="text-[10px] text-slate-500">{opt.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -60,7 +60,7 @@ const en: Dict = {
   freeRotationDesc: 'Test all angles — maximum yield search',
   runNesting: 'Run Nesting',
   running: 'Running…',
-  cancel: 'Cancel',
+  cancel: 'Stop',
   result: 'Result',
   perSheet: 'Per sheet',
   pcs: 'pcs',
@@ -81,12 +81,12 @@ const en: Dict = {
   measureTitle: 'Measure tool — click two points',
   reset: 'Reset',
   lock: 'Lock',
-  unlock: 'Unlock',
+  unlock: 'Edit',
   lockTitle: 'Lock layout (exit edit mode)',
   unlockTitle: 'Unlock to edit parts',
   exportFile: 'Export',
   lockToExport: 'Lock layout first to export',
-  placingParts: 'Placing {current} / {total} parts',
+  placingParts: 'Placing {current} parts',
   computing: 'Computing...',
   measureHint0: 'Click a part or point',
   measureHint1: 'Click another part or point',
@@ -109,6 +109,8 @@ const en: Dict = {
   editModeBottom: 'Select · Drag to move · Drag ↻ handle to rotate · Lock parts to fix them',
   computingStatus: 'Computing…',
   importAndRun: 'Import parts and run nesting',
+  lockOffSheetWarning: 'Move all parts back onto the sheet before locking',
+  pcsPerSet: 'pcs per set',
 }
 
 const ja: Dict = {
@@ -160,7 +162,7 @@ const ja: Dict = {
   freeRotationDesc: '全角度探索 — 最大歩留まり',
   runNesting: 'ネスティング実行',
   running: '実行中…',
-  cancel: 'キャンセル',
+  cancel: 'ストップ',
   result: '結果',
   perSheet: '1シートあたり',
   pcs: '個',
@@ -186,7 +188,7 @@ const ja: Dict = {
   unlockTitle: '編集モードへ',
   exportFile: 'エクスポート',
   lockToExport: 'エクスポートするにはロックしてください',
-  placingParts: '{current} / {total} パーツ配置中',
+  placingParts: '{current} パーツ配置中',
   computing: '計算中...',
   measureHint0: 'パーツまたは点をクリック',
   measureHint1: '別のパーツまたは点をクリック',
@@ -209,6 +211,8 @@ const ja: Dict = {
   editModeBottom: '選択 · ドラッグで移動 · ↻ハンドルで回転 · パーツを固定して確定',
   computingStatus: '計算中…',
   importAndRun: 'パーツを読み込んでネスティングを実行',
+  lockOffSheetWarning: 'シート外のパーツをすべて戻してからロックしてください',
+  pcsPerSet: '個/セット',
 }
 
 const vi: Dict = {
@@ -260,7 +264,7 @@ const vi: Dict = {
   freeRotationDesc: 'Thử mọi góc — tối đa hiệu suất',
   runNesting: 'Chạy Nesting',
   running: 'Đang chạy…',
-  cancel: 'Hủy',
+  cancel: 'Dừng',
   result: 'Kết quả',
   perSheet: 'Mỗi tấm vật liệu',
   pcs: 'cái',
@@ -286,7 +290,7 @@ const vi: Dict = {
   unlockTitle: 'Mở khóa để chỉnh sửa',
   exportFile: 'Xuất file',
   lockToExport: 'Khóa layout trước khi xuất file',
-  placingParts: 'Đang xếp {current} / {total} sản phẩm',
+  placingParts: 'Đang xếp {current} sản phẩm',
   computing: 'Đang tính toán...',
   measureHint0: 'Nhấp vào sản phẩm hoặc điểm bất kỳ',
   measureHint1: 'Nhấp vào sản phẩm hoặc điểm thứ hai',
@@ -309,6 +313,8 @@ const vi: Dict = {
   editModeBottom: 'Chọn · Kéo để di · Kéo ↻ để xoay · Khóa part để giữ nguyên',
   computingStatus: 'Đang tính toán…',
   importAndRun: 'Import sản phẩm và chạy nesting',
+  lockOffSheetWarning: 'Vui lòng đưa tất cả sản phẩm ngoài tấm vật liệu vào trước khi khóa',
+  pcsPerSet: 'cái/bộ',
 }
 
 const ph: Dict = {
@@ -360,7 +366,7 @@ const ph: Dict = {
   freeRotationDesc: 'Subukan ang lahat ng anggulo — pinakamataas na yield',
   runNesting: 'Patakbuhin ang Nesting',
   running: 'Tumatakbo…',
-  cancel: 'Kanselahin',
+  cancel: 'Itigil',
   result: 'Resulta',
   perSheet: 'Bawat Sheet',
   pcs: 'piraso',
@@ -381,12 +387,12 @@ const ph: Dict = {
   measureTitle: 'Tool sa pagsukat — i-click ang 2 punto',
   reset: 'I-reset',
   lock: 'I-lock',
-  unlock: 'I-unlock',
+  unlock: 'I-edit',
   lockTitle: 'I-lock ang layout (lumabas sa edit mode)',
   unlockTitle: 'I-unlock para mag-edit',
   exportFile: 'I-export',
   lockToExport: 'I-lock muna ang layout bago mag-export',
-  placingParts: 'Inilalagay ang {current} / {total} bahagi',
+  placingParts: 'Inilalagay ang {current} bahagi',
   computing: 'Kinakalkula...',
   measureHint0: 'I-click ang bahagi o punto',
   measureHint1: 'I-click ang isa pang bahagi o punto',
@@ -409,6 +415,8 @@ const ph: Dict = {
   editModeBottom: 'Piliin · I-drag para ilipat · I-drag ↻ para i-rotate · I-lock ang mga part para manatili',
   computingStatus: 'Kinakalkula…',
   importAndRun: 'Mag-import ng mga bahagi at patakbuhin ang nesting',
+  lockOffSheetWarning: 'Ilipat ang lahat ng bahagi sa labas ng sheet pabalik bago i-lock',
+  pcsPerSet: 'piraso/set',
 }
 
 const th: Dict = {
@@ -460,7 +468,7 @@ const th: Dict = {
   freeRotationDesc: 'ทดสอบทุกมุม — ผลผลิตสูงสุด',
   runNesting: 'รัน Nesting',
   running: 'กำลังรัน…',
-  cancel: 'ยกเลิก',
+  cancel: 'หยุด',
   result: 'ผลลัพธ์',
   perSheet: 'ต่อแผ่น',
   pcs: 'ชิ้น',
@@ -486,7 +494,7 @@ const th: Dict = {
   unlockTitle: 'ปลดล็อกเพื่อแก้ไข',
   exportFile: 'ส่งออก',
   lockToExport: 'ล็อกก่อนจึงจะส่งออกได้',
-  placingParts: 'กำลังวาง {current} / {total} ชิ้น',
+  placingParts: 'กำลังวาง {current} ชิ้น',
   computing: 'กำลังคำนวณ...',
   measureHint0: 'คลิกชิ้นงานหรือจุดใดก็ได้',
   measureHint1: 'คลิกชิ้นงานหรือจุดที่สอง',
@@ -509,6 +517,8 @@ const th: Dict = {
   editModeBottom: 'เลือก · ลากเพื่อย้าย · ลาก ↻ เพื่อหมุน · ล็อคชิ้นส่วนเพื่อตรึง',
   computingStatus: 'กำลังคำนวณ…',
   importAndRun: 'นำเข้าชิ้นงานและรัน nesting',
+  lockOffSheetWarning: 'ย้ายชิ้นงานที่อยู่นอกแผ่นทั้งหมดกลับก่อนล็อก',
+  pcsPerSet: 'ชิ้น/ชุด',
 }
 
 export const translations: Record<Lang, Dict> = { en, ja, vi, ph, th }
