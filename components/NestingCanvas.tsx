@@ -111,68 +111,6 @@ function getRotateHandle(pts: Pt[], scale: number): Pt {
   return { x: (b.minX + b.maxX) / 2, y: b.minY - HANDLE_LIFT_PX / scale }
 }
 
-function getEdgeAxes(poly: Pt[]): Pt[] {
-  const axes: Pt[] = []
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length]
-    const dx = b.x - a.x, dy = b.y - a.y
-    const len = Math.sqrt(dx * dx + dy * dy)
-    if (len > 0.001) axes.push({ x: -dy / len, y: dx / len })
-  }
-  return axes
-}
-
-function projectOnto(poly: Pt[], axis: Pt): [number, number] {
-  let min = Infinity, max = -Infinity
-  for (const p of poly) {
-    const d = p.x * axis.x + p.y * axis.y
-    if (d < min) min = d; if (d > max) max = d
-  }
-  return [min, max]
-}
-
-function satCollides(a: Pt[], b: Pt[]): boolean {
-  for (const axis of [...getEdgeAxes(a), ...getEdgeAxes(b)]) {
-    const [minA, maxA] = projectOnto(a, axis)
-    const [minB, maxB] = projectOnto(b, axis)
-    if (maxA <= minB || maxB <= minA) return false
-  }
-  return true
-}
-
-function isContainedInBounds(pts: Pt[], boundary: Pt[] | undefined, W: number, H: number): boolean {
-  for (const p of pts) {
-    if (boundary && boundary.length >= 3) {
-      if (!pointInPoly(p.x, p.y, boundary)) return false
-    } else {
-      if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) return false
-    }
-  }
-  return true
-}
-
-function isValidPlacement(
-  candidatePts: Pt[],
-  partId: string,
-  allParts: PlacedPart[],
-  boundary: Pt[] | undefined,
-  obstacles: Pt[][] | undefined,
-  W: number,
-  H: number
-): boolean {
-  if (!isContainedInBounds(candidatePts, boundary, W, H)) return false
-  for (const other of allParts) {
-    if (other.id === partId) continue
-    if (satCollides(candidatePts, other.points)) return false
-  }
-  if (obstacles) {
-    for (const obs of obstacles) {
-      if (obs.length >= 3 && satCollides(candidatePts, obs)) return false
-    }
-  }
-  return true
-}
-
 function drawDim(
   ctx: CanvasRenderingContext2D,
   x1: number, y1: number, x2: number, y2: number,
@@ -228,6 +166,7 @@ export default function NestingCanvas({
   const [viewOffset, setViewOffset] = useState({ x: PAD, y: PAD })
   const [showExport, setShowExport] = useState(false)
   const [exportBlocked, setExportBlocked] = useState(false)
+  const [lockWarning, setLockWarning] = useState(false)
   const [showExportSettings, setShowExportSettings] = useState(false)
   const [exportSettings, setExportSettings] = useState<ExportSettings>(() => {
     if (typeof window === 'undefined') return DEFAULT_EXPORT_SETTINGS
@@ -301,6 +240,12 @@ export default function NestingCanvas({
     const timer = setTimeout(() => setExportBlocked(false), 2000)
     return () => clearTimeout(timer)
   }, [exportBlocked])
+
+  useEffect(() => {
+    if (!lockWarning) return
+    const timer = setTimeout(() => setLockWarning(false), 3000)
+    return () => clearTimeout(timer)
+  }, [lockWarning])
 
   const labelColors = useMemo(() => {
     const map = new Map<string, string>()
@@ -546,6 +491,8 @@ export default function NestingCanvas({
       const isSelected = editMode ? part.id === selectedEditId : selectedPart?.id === part.id
       const pts = (editMode && tempPart?.id === part.id) ? tempPart.points : part.points
       const holes = (editMode && tempPart?.id === part.id) ? tempPart.holes : part.holes
+      const bPt = getBounds(pts)
+      const isOffSheet = editMode && (bPt.minX < 0 || bPt.minY < 0 || bPt.maxX > W || bPt.maxY > H)
 
       ctx.beginPath()
       ctx.moveTo(pts[0].x, pts[0].y)
@@ -558,13 +505,17 @@ export default function NestingCanvas({
           ctx.closePath()
         }
       }
-      ctx.fillStyle = isSelected ? color + '55' : color + '28'
+      ctx.fillStyle = isSelected ? color + '55' : isOffSheet ? color + '18' : color + '28'
       ctx.fill('evenodd')
       const isLocked = editMode && (tempPart?.id === part.id ? false : (part as PlacedPart).locked)
       if (isLocked) {
         ctx.setLineDash([5 / s, 3 / s])
         ctx.strokeStyle = '#f59e0b'
         ctx.lineWidth = 1.5 / s
+      } else if (isOffSheet) {
+        ctx.setLineDash([6 / s, 3 / s])
+        ctx.strokeStyle = color + 'aa'
+        ctx.lineWidth = 1 / s
       } else {
         ctx.strokeStyle = color
         ctx.lineWidth = (isSelected ? 2 : 1.2) / s
@@ -861,7 +812,6 @@ export default function NestingCanvas({
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (editMode && editInteract.type !== 'idle') {
       const pt = toSheet(e)
-      const W = sheetConfig.width, H = sheetConfig.height
 
       if (editInteract.type === 'moving') {
         const dx = pt.x - editInteract.startMmX
@@ -869,19 +819,15 @@ export default function NestingCanvas({
         if (Math.abs(dx) < 0.5 / viewScale && Math.abs(dy) < 0.5 / viewScale) return
         const newPts = translatePts(editInteract.origPts, dx, dy)
         const newHoles = editInteract.origHoles?.map(h => translatePts(h, dx, dy))
-        if (isValidPlacement(newPts, editInteract.partId, editablePlaced, boundary, obstacles, W, H)) {
-          const base = editablePlaced.find(p => p.id === editInteract.partId)!
-          setTempPart({ ...base, points: newPts, holes: newHoles })
-        }
+        const base = editablePlaced.find(p => p.id === editInteract.partId)!
+        setTempPart({ ...base, points: newPts, holes: newHoles })
       } else if (editInteract.type === 'rotating') {
         const angle = Math.atan2(pt.y - editInteract.cy, pt.x - editInteract.cx)
         const delta = angle - editInteract.startAngle
         const newPts = rotatePts(editInteract.origPts, editInteract.cx, editInteract.cy, delta)
         const newHoles = editInteract.origHoles?.map(h => rotatePts(h, editInteract.cx, editInteract.cy, delta))
-        if (isValidPlacement(newPts, editInteract.partId, editablePlaced, boundary, obstacles, W, H)) {
-          const base = editablePlaced.find(p => p.id === editInteract.partId)!
-          setTempPart({ ...base, points: newPts, holes: newHoles })
-        }
+        const base = editablePlaced.find(p => p.id === editInteract.partId)!
+        setTempPart({ ...base, points: newPts, holes: newHoles })
       }
       return
     }
@@ -1340,7 +1286,17 @@ export default function NestingCanvas({
           <>
             <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
             <button
-              onClick={() => onEditModeChange(!editMode)}
+              onClick={() => {
+                if (editMode) {
+                  const bW = sheetConfig.width, bH = sheetConfig.height
+                  const hasOffSheet = editablePlaced.some(p => {
+                    const b = getBounds(p.points)
+                    return b.minX < 0 || b.minY < 0 || b.maxX > bW || b.maxY > bH
+                  })
+                  if (hasOffSheet) { setLockWarning(true); return }
+                }
+                onEditModeChange(!editMode)
+              }}
               title={editMode ? t('lockTitle') : t('unlockTitle')}
               className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs transition-colors ${
                 editMode
@@ -1363,6 +1319,11 @@ export default function NestingCanvas({
               )}
               {editMode ? t('unlock') : t('lock')}
             </button>
+            {lockWarning && (
+              <span className="text-[11px] text-amber-400 bg-amber-950/60 border border-amber-500/30 rounded px-2 py-0.5 whitespace-nowrap">
+                {t('lockOffSheetWarning')}
+              </span>
+            )}
           </>
         )}
 
@@ -1538,7 +1499,7 @@ export default function NestingCanvas({
               <div className="flex items-center gap-2.5">
                 <div className="w-3.5 h-3.5 rounded-full border-2 border-slate-600 border-t-blue-400 animate-spin shrink-0" />
                 <span className="text-slate-300 text-sm font-medium">
-                  {progress ? t('placingParts', { current: progress.current, total: progress.total }) : t('computing')}
+                  {progress ? t('placingParts', { current: progress.current }) : t('computing')}
                 </span>
               </div>
               {progress && (

@@ -117,6 +117,8 @@ export default function Page() {
   const sheetFileInputRef = useRef<HTMLInputElement>(null)
   const layoutHelpRef = useRef<HTMLSpanElement>(null)
   const [layoutTooltipPos, setLayoutTooltipPos] = useState<{ x: number; y: number } | null>(null)
+  const [qtyTooltipPos, setQtyTooltipPos] = useState<{ x: number; y: number } | null>(null)
+  const [dimTooltip, setDimTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
 
   // Parts input mode
   const [partsMode, setPartsMode] = useState<'quick' | 'import'>('import')
@@ -582,8 +584,15 @@ export default function Page() {
                       <div className="text-xs text-slate-300 truncate">{part.label}</div>
                       <div className="text-[10px] text-slate-500">{area.toLocaleString()} mm²</div>
                     </div>
-                    <div className="relative group shrink-0">
-                      <div className="flex items-center gap-0.5">
+                    <div className="shrink-0">
+                      <div
+                        className="flex items-center gap-0.5"
+                        onMouseEnter={e => {
+                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          setQtyTooltipPos({ x: r.right, y: r.top })
+                        }}
+                        onMouseLeave={() => setQtyTooltipPos(null)}
+                      >
                         <span className="text-[10px] text-slate-500">×</span>
                         <input
                           type="number" min="1" max="99"
@@ -593,11 +602,6 @@ export default function Page() {
                           ))}
                           className="w-8 bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200 text-center focus:outline-none focus:border-blue-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
-                      </div>
-                      <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block z-50 pointer-events-none">
-                        <div className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-300 whitespace-nowrap shadow-xl">
-                          {t('pcsPerSet')}
-                        </div>
                       </div>
                     </div>
                     <button
@@ -678,7 +682,17 @@ export default function Page() {
             /* Dimensions mode */
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">{t('width')}</label>
+                <div className="flex items-center gap-1 mb-1">
+                  <label className="text-[11px] text-slate-400">{t('width')}</label>
+                  <span
+                    className="w-3.5 h-3.5 rounded-full bg-slate-700 text-slate-500 text-[9px] flex items-center justify-center cursor-default select-none"
+                    onMouseEnter={e => {
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                      setDimTooltip({ x: r.left, y: r.top, text: t('widthTooltip') })
+                    }}
+                    onMouseLeave={() => setDimTooltip(null)}
+                  >?</span>
+                </div>
                 <input
                   type="number" min="1" value={sheetConfig.width}
                   onChange={e => setSheetConfig(p => ({ ...p, width: Number(e.target.value) }))}
@@ -686,7 +700,17 @@ export default function Page() {
                 />
               </div>
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">{t('height')}</label>
+                <div className="flex items-center gap-1 mb-1">
+                  <label className="text-[11px] text-slate-400">{t('height')}</label>
+                  <span
+                    className="w-3.5 h-3.5 rounded-full bg-slate-700 text-slate-500 text-[9px] flex items-center justify-center cursor-default select-none"
+                    onMouseEnter={e => {
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                      setDimTooltip({ x: r.left, y: r.top, text: t('heightTooltip') })
+                    }}
+                    onMouseLeave={() => setDimTooltip(null)}
+                  >?</span>
+                </div>
                 <input
                   type="number" min="1" value={sheetConfig.height}
                   onChange={e => setSheetConfig(p => ({ ...p, height: Number(e.target.value) }))}
@@ -836,6 +860,28 @@ export default function Page() {
           t={t}
         />
       </div>
+
+      {dimTooltip && (
+        <div
+          className="fixed z-50 pointer-events-none"
+          style={{ left: dimTooltip.x, bottom: window.innerHeight - dimTooltip.y + 8 }}
+        >
+          <div className="bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 text-[10px] text-slate-300 leading-relaxed shadow-xl whitespace-nowrap">
+            {dimTooltip.text}
+          </div>
+        </div>
+      )}
+
+      {qtyTooltipPos && (
+        <div
+          className="fixed z-50 pointer-events-none"
+          style={{ right: window.innerWidth - qtyTooltipPos.x, bottom: window.innerHeight - qtyTooltipPos.y + 8 }}
+        >
+          <div className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-300 whitespace-nowrap shadow-xl">
+            {t('pcsPerSet')}
+          </div>
+        </div>
+      )}
 
       {layoutTooltipPos && (
         <div

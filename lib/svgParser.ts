@@ -496,6 +496,80 @@ function bboxContains(outer: Point[], inner: Point[]): boolean {
   return true
 }
 
+// Detects pairs of chained polygons that form the two lobes of a figure-8 (or dumbbell)
+// shape — same x-range width, heavily overlapping x-extents, small y-gap between them —
+// and stitches each pair into a single concave polygon so the nesting engine treats the
+// whole part as one unit.
+function mergeAdjacentLobes(chains: Point[][]): Point[][] {
+  if (chains.length < 2) return chains
+
+  const bounds = chains.map(pts => {
+    let minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y
+    }
+    return { minX, maxX, minY, maxY }
+  })
+
+  const merged = new Array(chains.length).fill(false)
+  const result: Point[][] = []
+
+  for (let i = 0; i < chains.length; i++) {
+    if (merged[i]) continue
+    let bestJ = -1, bestGap = 15 // max tolerated gap in mm
+
+    for (let j = 0; j < chains.length; j++) {
+      if (j === i || merged[j]) continue
+      const bi = bounds[i], bj = bounds[j]
+      const iW = bi.maxX - bi.minX, jW = bj.maxX - bj.minX
+      // Widths must be similar
+      if (Math.min(iW, jW) / Math.max(iW, jW) < 0.8) continue
+      // X-ranges must heavily overlap (≥80% of the wider range)
+      const xOverlap = Math.min(bi.maxX, bj.maxX) - Math.max(bi.minX, bj.minX)
+      if (xOverlap < Math.max(iW, jW) * 0.8) continue
+      // One polygon must be directly above the other with a small gap
+      const gapA = bi.minY - bj.maxY // i is above j
+      const gapB = bj.minY - bi.maxY // j is above i
+      const gap = gapA > 0 ? gapA : gapB > 0 ? gapB : -1
+      if (gap > 0 && gap < bestGap) { bestJ = j; bestGap = gap }
+    }
+
+    if (bestJ < 0) {
+      result.push(chains[i])
+      merged[i] = true
+      continue
+    }
+
+    // Determine which lobe is on top (higher minY in screen coords = lower on canvas,
+    // but here we work in DXF coords where +y is up, so higher minY = top lobe).
+    const bi = bounds[i], bj = bounds[bestJ]
+    const topIdx = bi.minY > bj.minY ? i : bestJ
+    const botIdx = topIdx === i ? bestJ : i
+    const top = chains[topIdx], bot = chains[botIdx]
+
+    // Find the closest pair of points across the gap to use as the stitch seam.
+    let p1Idx = 0, p2Idx = 0, minDist = Infinity
+    for (let a = 0; a < top.length; a++) {
+      for (let b = 0; b < bot.length; b++) {
+        const d = Math.hypot(top[a].x - bot[b].x, top[a].y - bot[b].y)
+        if (d < minDist) { minDist = d; p1Idx = a; p2Idx = b }
+      }
+    }
+
+    // Rotate each chain so it starts at the stitch point, then concatenate.
+    // The implicit closing edge of the merged polygon acts as the second bridge
+    // across the waist gap (~5 mm).
+    const rotTop = [...top.slice(p1Idx), ...top.slice(0, p1Idx)]
+    const rotBot = [...bot.slice(p2Idx), ...bot.slice(0, p2Idx)]
+    result.push([...rotTop, ...rotBot])
+    merged[i] = true
+    merged[bestJ] = true
+  }
+
+  return result
+}
+
 export async function parseDXF(file: File): Promise<InputPolygon[]> {
   const text = await file.text()
   const mod = await import('dxf-parser')
@@ -557,7 +631,8 @@ export async function parseDXF(file: File): Promise<InputPolygon[]> {
 
   // Merge chained contours + direct closed shapes, then run unified containment detection.
   const chains = allSegments.length > 0 ? groupSegmentsToPolygons(allSegments, 0.5) : []
-  const allRaw: Point[][] = [...chains, ...directPolygons]
+  const mergedChains = mergeAdjacentLobes(chains)
+  const allRaw: Point[][] = [...mergedChains, ...directPolygons]
 
   if (allRaw.length > 0) {
     const outerRaw = allRaw.filter((pts, i) =>
